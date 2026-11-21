@@ -423,6 +423,10 @@ TransferQueue 快照还包含多模态 `pixel_values`、token、位置编码和 
 替换原件；不得处理仍在写入的文件。一次真实验证将 306 GiB 逻辑大小的 smoke 核心文件实际占盘
 降至约 118 GiB，完整内容不变。正式训练的动量可能更密集，空间预算不能沿用该节省比例。
 重新核算时，已有 smoke 已计入 quota.used，不要再次从 quota.free 扣除；同时确认配额用量已完成结算。
+
+节点临时目录也要区分内存盘和磁盘。启动器优先使用磁盘上的 `SLURM_TMPDIR`，否则使用
+`/localscratch/$USER`；没有该目录时才检查并回退到磁盘上的 `/tmp`。Fir 实测 `/tmp` 是 tmpfs，
+`/localscratch` 是本地磁盘。JIT 缓存、Ray 临时文件若放在 tmpfs，会占用作业的内存预算。
 同一个 Lustre 文件系统可能承载多个目录配额，`lfs quota -u` 的跨目录用户用量不能代替目标目录配额。
 支持 Lustre project quota 的站点可这样检查实际工作目录：
 

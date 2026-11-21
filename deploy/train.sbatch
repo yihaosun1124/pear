@@ -99,7 +99,23 @@ else
   if [ "${SLURM_RESTART_COUNT:-0}" -gt 0 ] && [ "$MODE" = smoke ]; then
     export RUN=$RUN-r$SLURM_RESTART_COUNT
   fi
-  export LOCAL_DIR=/tmp/$USER/pear-$SLURM_JOB_ID
+  # Some DRAC GPU nodes mount /tmp as tmpfs: JIT and Ray files would consume the job's RAM budget.
+  LOCAL_PARENT=${SLURM_TMPDIR:-}
+  if [ -n "$LOCAL_PARENT" ] && [ "$(stat -f -c %T "$LOCAL_PARENT")" = tmpfs ]; then
+    LOCAL_PARENT=
+  fi
+  if [ -z "$LOCAL_PARENT" ]; then
+    if [ -d /localscratch ]; then
+      LOCAL_PARENT=/localscratch/$USER
+    else
+      LOCAL_PARENT=/tmp/$USER
+      [ "$(stat -f -c %T /tmp)" != tmpfs ] || {
+        echo 'Need a disk-backed SLURM_TMPDIR or /localscratch for node-local caches' >&2
+        exit 2
+      }
+    fi
+  fi
+  export LOCAL_DIR=$LOCAL_PARENT/pear-$SLURM_JOB_ID
 fi
 if [ "$MODE" = smoke ]; then
   # A fresh smoke run must not pass by reusing a previous checkpoint.
