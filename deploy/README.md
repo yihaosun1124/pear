@@ -98,7 +98,7 @@ export UV_OVERRIDE=$ROOT/scripts/install/verl/overrides.txt
 PYTHON=$WORK_DIR/envs/verl/bin/python
 
 uv pip install --python "$PYTHON" --find-links "$FLASHINFER_CUBIN_WHEELS_URL" \
-  -r "$ROOT/pyproject.toml" --extra verl_gpu pip setuptools_scm ninja grpcio-tools
+  -r "$ROOT/pyproject.toml" --extra verl_gpu pip setuptools_scm ninja grpcio-tools aiofile
 uv pip install --python "$PYTHON" --no-deps --index "$FLASHINFER_JIT_CACHE_INDEX_URL" \
   -r "$ROOT/pyproject.toml" --extra verl_jit_cache
 uv pip install --python "$PYTHON" --no-deps --prerelease=allow flash-attn-4
