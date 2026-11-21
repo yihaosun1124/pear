@@ -370,7 +370,31 @@ def test_a_sidecar_whose_memory_is_off_its_numa_node_is_killed(stand_in, monkeyp
 def test_a_numa_node_without_room_for_the_tier_starts_no_sidecar(stand_in, monkeypatch):
     monkeypatch.setattr(LMCacheSidecar, "_available_mb", staticmethod(lambda numa_node: 1024))
 
-    with pytest.raises(RuntimeError, match=r"NUMA node 0 has 1024 MB available, need 1 GB tier \+ 100 GB"):
+    with pytest.raises(RuntimeError, match=r"NUMA node 0 has 1024 MiB available, need 1 GiB tier \+ 100 GiB headroom"):
         Replica.server(stand_in)._preprocess_engine_kwargs({})
 
     assert not stand_in.record_path.exists()
+
+
+@pytest.mark.parametrize(
+    "headroom_gb,available_gb,can_start",
+    [(None, 126, False), (32, 126, True), (32, 95, False), (32, 96, True)],
+)
+def test_site_headroom_for_a_64_gib_tier(stand_in, monkeypatch, headroom_gb, available_gb, can_start):
+    monkeypatch.setattr(LMCacheSidecar, "_available_mb", staticmethod(lambda _: available_gb * 1024))
+    server = Replica.server(stand_in)
+    config = server.config.custom["lmcache"]
+    config["l1_size_gb"] = 64
+    if headroom_gb is not None:
+        config["numa_headroom_gb"] = headroom_gb
+
+    if not can_start:
+        with pytest.raises(RuntimeError, match="GiB headroom"):
+            server._preprocess_engine_kwargs({})
+        assert not stand_in.record_path.exists()
+        return
+
+    server._preprocess_engine_kwargs({})
+    arguments = stand_in.record()["arguments"]
+    assert arguments[:2] == ["--cpunodebind=0", "--membind=0"]
+    assert arguments[arguments.index("--l1-size-gb") + 1] == "64"

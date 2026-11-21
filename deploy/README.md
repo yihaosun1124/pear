@@ -46,9 +46,10 @@ torch `2.14.0+cu130`、vLLM `0.34.0`、Ray `2.58.0`、transformers `5.22.2`。
 | `scripts/gpu_process_variables.sh` | 加载可用的 C++ 运行库，设置 CUDA stub 的链接路径及 TileLang 本地缓存 |
 | `pear/models/qwen3_5/rollout/hopper/all_reduce.py` | 不支持 NVLink multicast 时全 TP 组一致回退，FP32 求和后一次转 BF16 |
 | `tests/models/test_qwen3_5_rollout_kernels_hopper_on_gpu.py` | 验证自动检测与强制回退路径，保留原有 FP64 误差界 |
+| `pear/rollout/lmcache.py` | NUMA 空闲预留可配置，默认仍为 100 GiB；Rorqual 显式设为 32 GiB |
 
-仅重新 clone 官方仓库不会得到这些本地修改。迁移时应复制当前工作树，或在官方固定版本上
-一并复制上述四个文件和 `deploy/`。不要删除 `src/LIBERO` 或 `3rdparty/verl/src`：
+迁移时 clone 本文的 fork `drac` 分支，即可获得上述修复和 `deploy/`；
+仅 clone 官方仓库不会得到这些修改。不要删除 `src/LIBERO` 或 `3rdparty/verl/src`：
 环境通过 editable 安装直接引用它们。`cache` 是可重新生成的数据，`src` 不全是可删的缓存。
 
 ## 2. 安装：登录节点下载，CPU 计算节点编译
@@ -98,7 +99,7 @@ export UV_OVERRIDE=$ROOT/scripts/install/verl/overrides.txt
 PYTHON=$WORK_DIR/envs/verl/bin/python
 
 uv pip install --python "$PYTHON" --find-links "$FLASHINFER_CUBIN_WHEELS_URL" \
-  -r "$ROOT/pyproject.toml" --extra verl_gpu pip setuptools_scm ninja grpcio-tools aiofile
+  -r "$ROOT/pyproject.toml" --extra verl_gpu pip setuptools_scm ninja grpcio-tools aiofile aiofiles
 uv pip install --python "$PYTHON" --no-deps --index "$FLASHINFER_JIT_CACHE_INDEX_URL" \
   -r "$ROOT/pyproject.toml" --extra verl_jit_cache
 uv pip install --python "$PYTHON" --no-deps --prerelease=allow flash-attn-4
@@ -114,6 +115,11 @@ LMCACHE_SRC=$WORK_DIR/src/LMCache bash 3rdparty/LMCache/scripts/checkout_lmcache
 FlashAttention 固定在 `eed1971f5132630dc296fe37601e834d4b57a248`，
 不能直接用任意 PyPI 版本替代：当前 torch 的头文件要求 C++20。
 LMCache 使用官方提供的补丁版本，即使训练时关闭其 sidecar，环境依赖仍需要安装。
+复用已构建的 LMCache wheel 时，应在联网阶段用上面的 constraints / overrides 安装该 wheel，
+让解析器缓存其完整 runtime 依赖，再提交离线安装检查。仅下载 `aiofile` 不够：
+`aiofiles` 是另一个包，还需要 wheel 元数据声明的 cloud / gRPC / Redis 等依赖。
+若此时其他安装进程正在修改同一个环境，可使用 `uv pip install --target` 临时目录预缓存这些包，
+完成后删除临时目录；不要同时修改正在安装的 venv。
 
 ### 2.3 补齐 FlashInfer JIT 链接所需的 driver stub
 
@@ -164,7 +170,7 @@ SBATCH
 ```
 
 完整安装会构建 FA2、Hopper FA3、带补丁的 LMCache，并执行 CPU 环境检查。
-若日志显示 wheel 已生成，但由于缺少缓存依赖（本次为 `aiofile==3.12.3`）而退出，
+若日志显示 wheel 已生成，但由于缺少缓存依赖（曾遇到 `aiofile==3.12.3`、`aiofiles==25.1.0`）而退出，
 回到联网登录节点安装已生成的 wheel，随后重新提交上面的安装作业：
 
 ```bash
@@ -272,7 +278,8 @@ CPU 数和每节点内存需要按目标集群调整。
 
 正式脚本只调整资源拓扑为每节点 4 卡、4 个 trainer 节点和 12 个 rollout 节点；
 训练与 rollout 默认值沿用固定版本的官方 Stage 1 / H100 recipe，包括 batch、N、响应预算、MTP、
-group filter、logger、checkpoint 保留策略。唯一额外调整是将 LMCache 主存缓存从 700 GiB 减至 64 GiB。
+group filter、logger、checkpoint 保留策略。默认将 LMCache 主存缓存从 700 GiB 减至 64 GiB；
+Rorqual 还使用用户批准的 NUMA 预留 32 GiB，其他站点默认仍为官方的 100 GiB。
 这是系统缓存容量调整，不改变 GRPO、训练数据或训练目标；可能增加缓存淘汰、搬运和重算。
 每节点 Ray CPU slots 按 Slurm 的 CPU 分配扣除系统余量。
 FSDP8 / SP8 会跨两个 4 卡节点，16 个训练 GPU 的数据并行度为 2。
@@ -295,8 +302,10 @@ FSDP8 / SP8 会跨两个 4 卡节点，16 个训练 GPU 的数据并行度为 2�
 当前正式脚本默认 `LMCACHE_GB=64`。每个 rollout 节点只有一个 TP4 副本，因此每节点固定缓存是
 64 GiB，再加官方 Ray object store 的 64 GiB，为其他进程留下约 322 GiB 的预算。
 这不是整节点实际内存占用预测：模型加载、模拟器、Ray worker、临时张量还需从余量中分配。
-官方的 NUMA headroom 检查仍保留 100 GiB，因此对应 NUMA 域启动时需至少 **164 GiB 可用内存**。
+NUMA headroom 默认仍为官方的 100 GiB，因此对应 NUMA 域启动时需至少 **164 GiB 可用内存**。
 迁移到其他 DRAC 集群需单独核对这一项；整机能申请 450G 不代表单 NUMA 域一定够。
+可通过 Hydra 的 `+actor_rollout_ref.rollout.custom.lmcache.numa_headroom_gb=...` 显式覆盖；
+这是启动容量检查的预留阈值，不是额外分配的缓存，也不会取消 NUMA 绑定或 95% 本地内存检查。
 若要改缓存容量，可传 `LMCACHE_GB=...`，不必改训练脚本，例如：
 
 ```bash
@@ -402,6 +411,19 @@ GPU 环境检查应在已分配的 H100 上执行：加载 `scripts/gpu_process_
 这些 H100 节点均为每节点 4 卡。不能沿用原 96 CPU 请求，否则会超出节点资源。
 48 CPU 时 Ray 使用 40 CPU，仍满足正式配置的每节点 32 个 LIBERO server；训练超参数不变。
 三个站点的 450G 请求均通过提交校验；运行中的 cgroup 上限仍需在实际分配后核对。
+
+Rorqual 的 H100 硬件探测作业 `27335380` 在 `rg21706` 实测 4 个 NUMA 域，
+每域约 126 GiB，无法满足默认的 `64 + 100 = 164 GiB` 检查。
+该站点经用户批准保留 64 GiB 缓存，将 NUMA 预留改为 32 GiB，即启动时要求至少 96 GiB 可用。
+提交 smoke 和正式任务时，在脚本参数最后追加：
+
+```bash
+-- +actor_rollout_ref.rollout.custom.lmcache.numa_headroom_gb=32
+```
+
+普通 smoke 默认关闭 LMCache；若要同时验证该站的真实 64 GiB 缓存分配，在同一个 `--` 后追加
+`actor_rollout_ref.rollout.custom.lmcache.enable=true actor_rollout_ref.rollout.custom.lmcache.l1_size_gb=64`。
+容量检查通过仍需实测缓存 pinning、NUMA 放置和 RL step；不能据此宣称正式负载已验证。
 
 ```bash
 # 在目标集群登录节点执行。按上表填写 ACCOUNT 和 CPUS。

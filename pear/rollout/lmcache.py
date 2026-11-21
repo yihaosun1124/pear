@@ -45,10 +45,20 @@ class LMCacheSidecar:
         rb"now total is (\d+) MB / (\d+) MB"
     )  # the pin-progress line: MB pinned so far / MB in the tier
 
-    def __init__(self, cuda_visible_devices: str, l1_size_gb: int, log_path: Path) -> None:
+    def __init__(
+        self,
+        cuda_visible_devices: str,
+        l1_size_gb: int,
+        log_path: Path,
+        *,
+        numa_headroom_gb: int | None = None,
+    ) -> None:
         self.cuda_visible_devices = cuda_visible_devices
         self.l1_size_gb = l1_size_gb
         self.log_path = log_path
+        self.numa_headroom_gb = self.NUMA_HEADROOM_GB if numa_headroom_gb is None else numa_headroom_gb
+        if type(self.numa_headroom_gb) is not int or self.numa_headroom_gb < 0:
+            raise ValueError("numa_headroom_gb must be a nonnegative integer")
 
         gpus = [int(g) for g in cuda_visible_devices.split(",") if g.strip()]
         index = min(gpus) // len(gpus)  # 0 for the node's first TP group, 1 for the second: distinct ports
@@ -62,10 +72,17 @@ class LMCacheSidecar:
         # other node exhausts it once two replicas share a node (swap, stalls, heartbeat loss)
         numa_node = self._numa_node(self.cuda_visible_devices)
         available_mb = self._available_mb(numa_node)
-        if available_mb < (self.l1_size_gb + self.NUMA_HEADROOM_GB) * 1024:
+        logger.info(
+            "LMCache NUMA node %d: %d MiB available, need %d GiB tier + %d GiB headroom",
+            numa_node,
+            available_mb,
+            self.l1_size_gb,
+            self.numa_headroom_gb,
+        )
+        if available_mb < (self.l1_size_gb + self.numa_headroom_gb) * 1024:
             raise RuntimeError(
-                f"NUMA node {numa_node} has {available_mb} MB available, "
-                f"need {self.l1_size_gb} GB tier + {self.NUMA_HEADROOM_GB} GB"
+                f"NUMA node {numa_node} has {available_mb} MiB available, "
+                f"need {self.l1_size_gb} GiB tier + {self.numa_headroom_gb} GiB headroom"
             )
 
         command = [
@@ -246,6 +263,7 @@ class LMCacheVLLMServer(vLLMHttpServer):
             os.environ[get_visible_devices_keyword()],
             int(lmcache_config["l1_size_gb"]),
             log_dir / f"lmcache_replica{self.replica_rank}_node{self.node_rank}.log",
+            numa_headroom_gb=lmcache_config.get("numa_headroom_gb"),
         )
         sidecar.start()
 
