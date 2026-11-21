@@ -384,6 +384,8 @@ Ray token 文件权限仅限当前用户，不要提交到代码仓库或分享�
 | actor 已初始化、rollout 也完成，却在 backward 失败 | FLA backward 延迟导入 TileLang，默认缓存写只读 home。`TILELANG_CACHE_DIR` 和 `TILELANG_TMP_DIR` 必须指向每节点 LOCAL_DIR；仅检查 import 或模型加载不够。 |
 | 多进程共享编译缓存冲突 / 临时目录残留 | JIT、CUDA、Ray 的临时目录按 job id 隔离；退出前归档 Ray 日志、停止 Ray、清理该作业的确切目录。不要假定 /tmp 是独立 SSD；若站点使用 tmpfs，临时文件也计入主存预算。 |
 | CPU 检查很慢并输出 `Timeout (0:05:00)!` 栈 | pytest 的 300 秒 faulthandler 只打印诊断栈，不会终止测试。Fir 实测栈停在 importlib 的 `.pyc` 写入与目录查询，进程等待 Lustre RPC 且读写量继续增长。后续进程设置 `PYTHONDONTWRITEBYTECODE=1`，仍可读取已有 bytecode；先查真实进程、退出码和最终测试结果，不要把这条诊断当失败后重启安装。 |
+| NVIDIA worker 报 `Please don't set ROCR_VISIBLE_DEVICES when HIP/CUDA_VISIBLE_DEVICES is set` | Rorqual 的 GPU 预检已通过，但 Ray worker 收到了同时存在的 CUDA / ROCR 设备变量。NVIDIA 运行环境在每个 Slurm step 内加载 `gpu_process_variables.sh` 时清除 `ROCR_VISIBLE_DEVICES` 和 `HIP_VISIBLE_DEVICES`，保留 CUDA 分配；不修改 GPU 数量或训练参数。 |
+| 登录节点安装 GPU 依赖被 `Killed`，退出 137 | Tamia 在完成大包下载后安装阶段被 SIGKILL；日志本身不能证明具体 OOM 原因。保留模型、venv 和已完成的 uv 缓存，在有明确 CPU / 内存配额的计算作业中修复安装；可能写到一半的包强制重装，不从零清空环境。 |
 | smoke 一直生成却不训练 | 官方 group filter 会丢弃全部奖励相同的组。minimal smoke 关闭它，使零奖励批次也能完成真实更新流程；正式训练保留官方设置。 |
 | `lr_scheduler.step()` 的顺序 warning | streamed AdamW 直接调用底层更新函数，PyTorch 的外层计数可能未识别。不能只凭 warning 判定没有更新；此次独立读取四个 rank 的 optimizer counter，均为 1。 |
 | 磁盘用量突然增长 | smoke 四 rank 的模型 + optimizer checkpoint 实测约 306 GiB/step；正式为 16 rank，复制维度与 TransferQueue 快照可能进一步增加体积，不能直接按 306 GiB 预算。默认保留两份，还需保存时的余量。 |

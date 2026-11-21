@@ -11,6 +11,10 @@ PYTHON_ENV=${1:?the Python environment of the processes, one that scripts/instal
 # skip new shared-filesystem writes in the many trainer, rollout and simulator processes.
 export PYTHONDONTWRITEBYTECODE=1
 
+# Some Slurm GRES configurations export both NVIDIA and AMD device selectors.
+# This CUDA runtime uses NVIDIA GPUs; verl rejects ROCR together with CUDA/HIP visibility.
+unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
+
 # the CUDA toolkit lives in the environment install.sh built, among the packages of its Python, which names their
 # directory; numactl and numastat, for the LMCache sidecars, where the target numactl installed them
 CUDA_HOME=$("$PYTHON_ENV/bin/python" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")/nvidia/cu13
