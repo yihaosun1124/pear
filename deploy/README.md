@@ -480,7 +480,10 @@ Trillium 原始 smoke 使用整节点内存；下述 Rorqual smoke 已在 450G �
 
 按用户要求，每步仍保存 checkpoint，每个 RUN 只保留最新一份；这项保留策略覆盖官方的两份默认值。
 存储按普通完整文件预留：smoke 实测约 306 GiB/份，独立 smoke 加一份正式 checkpoint
-的核心文件合计约 612 GiB，另留 TransferQueue、日志和安装缓存余量；正式大小仍需实测。
+的核心文件稳态合计约 612 GiB，另留 TransferQueue、日志和安装缓存余量；正式大小仍需实测。
+注意保存峰值：当前 checkpoint manager 在 `max_actor_ckpt_to_keep=1` 时，会先完整保存新份，
+成功后才删旧份，因此保存瞬间仍有两份正式核心文件，约 612 GiB；若同时保留独立 smoke，
+核心文件的总峰值仍约 918 GiB。这与最终只保留一份是不同的容量要求。
 其中模型主参数以 FP32 保存，约 102 GiB；AdamW 的一阶、二阶动量也以 FP32 保存，合计约
 204 GiB。即使只训练一步，保存的也是完整状态。分片总量已包含所有写文件的 rank，不能再乘卡数。
 
@@ -584,7 +587,7 @@ Ray token 文件权限仅限当前用户，不要提交到代码仓库或分享�
 | LMCache 的两个 0.5 秒超时单测找不到 record，或缺少本次 partial-progress 行 | 慢文件系统上的模拟 Python 尚未启动，测试已经耗尽 pinning 的短时限。超时测试 fixture 等待本次模拟进程输出首条 partial-progress 行后，才调用原生产 pinning 等待函数；0.5 秒断言、杀进程和旧日志隔离断言都保留。生产的 1800 秒 pinning 时限、NUMA 检查和 64 GiB 缓存设置不变。 |
 | smoke 一直生成却不训练 | 官方 group filter 会丢弃全部奖励相同的组。minimal smoke 关闭它，使零奖励批次也能完成真实更新流程；正式训练保留官方设置。 |
 | `lr_scheduler.step()` 的顺序 warning | streamed AdamW 直接调用底层更新函数，PyTorch 的外层计数可能未识别。不能只凭 warning 判定没有更新；此次独立读取四个 rank 的 optimizer counter，均为 1。 |
-| 磁盘用量突然增长 | 普通 smoke checkpoint 实测约 306 GiB/step。FSDP2 HSDP 去重复制维度，不能简单按 rank 数倍增；每个 RUN 按用户要求保留最新一份，加独立 smoke 的核心文件约需 612 GiB，TransferQueue 快照等另算。不使用稀疏存储。 |
+| 磁盘用量突然增长 | 普通 checkpoint 约 306 GiB/份。每个 RUN 最终保留一份，但安全保存会短暂保留新旧两份，正式核心峰值约 612 GiB；另留独立 smoke 时峰值约 918 GiB，TransferQueue 等另算。不使用稀疏存储。 |
 
 GPU 环境检查应在已分配的 H100 上执行：加载 `scripts/gpu_process_variables.sh` 后运行
 `python -m pytest tests/test_training_environment_on_gpu.py`。本次为 3/3 通过；
