@@ -250,6 +250,7 @@ def test_a_replica_starts_its_sidecar_and_names_it_to_vllm(stand_in, logged_line
     }
     assert "now total is 1024 MB / 1024 MB" in Replica.log_path(stand_in).read_text()
     assert logged_lines == [
+        ("INFO", f"LMCache NUMA node 0: {ROOMY_NODE_MB} MiB available, need 1 GiB tier + 100 GiB headroom"),
         ("INFO", f"lmcache server on port {port} pinned 1024 MB, 100.0% on NUMA node 0"),
         ("INFO", f"replica {Replica.RANK} node 0: LMCache sidecar on port {port} (http {http_port})"),
     ]
