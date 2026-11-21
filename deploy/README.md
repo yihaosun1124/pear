@@ -334,7 +334,7 @@ lazy import 索引递归打开源码。可在 CPU 计算作业内为该环境建
 SOURCE_CACHE=pear/utils/sitecustomize/pear_source_cache.py
 python "$SOURCE_CACHE" build "$ROOT" "$WORK_DIR"
 /usr/bin/python3 -B -S "$SOURCE_CACHE" stage-candidate "$ROOT" "$WORK_DIR" "$LOCAL_DIR"
-# 新进程的 startup hook 此时会选择本地 Transformers；检查全部依赖及启动回归。
+# 新进程的 startup hook 此时会选择本地源码；检查全部依赖及启动回归。
 python -m pytest tests/test_training_environment_on_cpu.py tests/rollout/test_lmcache_on_cpu.py \
   tests/test_verl_position_ids_on_cpu.py tests/test_package_metadata_on_cpu.py \
   tests/test_gpu_process_variables_on_cpu.py tests/test_source_cache_on_cpu.py
@@ -347,7 +347,14 @@ mv "$WORK_DIR/cache/transformers-source-candidate.json" "$WORK_DIR/cache/transfo
 环境路径和 commit，检查安装包 RECORD、归档及提取文件的哈希，拒绝越界路径或链接，
 然后原子发布本地目录。startup hook 只对匹配的 Python 环境和 cache tag 启用它；
 LIBERO 的另一环境、缺失或不匹配快照均沿用原包，distribution metadata 仍来自原环境。
-首次 cold JIT 的 smoke 可申请 1 小时；正式任务仍固定 2 小时，所有 GPU 预检保留。
+Fir 的 `4923135` 在 1 小时后仍停留在启动阶段，未完成 RL。Hopper 反向算子和 FlashInfer
+已通过；只读 strace 确认，虽然 `.pyc` 已命中本地缓存，OmegaConf 等普通包仍会在共享盘
+探测 `.so` 后缀并检查源文件，部分查询约 0.4–0.8 秒。源码快照因此也包含已安装的
+pytest、pluggy、Hydra、OmegaConf、ANTLR 等纯 Python 启动包及资源；安装包 metadata
+仍来自原环境，快照拒绝原生扩展，不复制 venv。更改后重新运行完整 CPU 检查再发布缓存。
+Rollout 的 FlashInfer 与四卡 allreduce 预检现在在同一个 Python 进程内顺序执行，复用已导入的
+模块，并保留分开的日志和全部断言；训练节点的反向算子检查仍并行执行。
+Fir 首次 cold JIT 的 smoke 使用 2 小时预算；正式任务仍固定 2 小时，所有 GPU 预检保留。
 
 验证作业应为 TERM/INT 设置非零退出，并以 `sacct` 的最终状态核对结果。
 旧作业 `4838738` 的 EXIT trap 曾在 Slurm TIMEOUT 后写出 `exit_code=0`，原收据保留，

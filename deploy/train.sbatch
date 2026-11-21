@@ -275,13 +275,16 @@ if [ "$MODE" = smoke ]; then
   srun --overlap --nodes=1 --ntasks=1 --nodelist="$HEAD" --cpus-per-task="$SLURM_CPUS_PER_TASK" \
     bash -c 'mkdir -p "$LOCAL_DIR"; source scripts/gpu_process_variables.sh "$WORK_DIR/envs/verl"
       test=tests/models/test_qwen3_5_training_kernels_on_gpu.py
-      python -m pytest "$test::test_the_hopper_delta_rule_backward_reuses_the_recompute_s_tensors"' \
+      python -u -m pytest "$test::test_the_hopper_delta_rule_backward_reuses_the_recompute_s_tensors"' \
     > "$RUN/training-preflight.log" 2>&1 &
   TRAIN_PREFLIGHT_PID=$!
   srun --overlap --nodes=1 --ntasks=1 --nodelist="$WORKER" --cpus-per-task="$SLURM_CPUS_PER_TASK" \
-    bash -c 'mkdir -p "$LOCAL_DIR"; source scripts/gpu_process_variables.sh "$WORK_DIR/envs/verl"; python -' \
+    bash -c 'mkdir -p "$LOCAL_DIR"; source scripts/gpu_process_variables.sh "$WORK_DIR/envs/verl"; python -u -' \
     > "$RUN/flashinfer-preflight.log" 2>&1 <<'PY'
 import json
+import os
+import pathlib
+import sys
 import flashinfer
 import torch
 from torch.nn import functional as F
@@ -295,12 +298,21 @@ torch.testing.assert_close(out, reference, rtol=8e-3, atol=8e-3)
 assert torch.isfinite(out).all()
 print(json.dumps({"flashinfer_silu_and_mul": "passed", "device": torch.cuda.get_device_name(),
                   "max_abs_error": (out.float() - reference.float()).abs().max().item()}))
+# Keep the imported CUDA/Python stack for the communication test. A fresh
+# interpreter otherwise repeats thousands of remote source-file stat calls.
+sys.stdout.flush()
+sys.stderr.flush()
+with (pathlib.Path(os.environ["RUN"]) / "allreduce-preflight.log").open("w") as stream:
+    os.dup2(stream.fileno(), 1)
+    os.dup2(stream.fileno(), 2)
+import runpy
+
+test = "tests/models/test_qwen3_5_rollout_kernels_hopper_on_gpu.py"
+# Use the real module entry point so multiprocessing.spawn does not try to
+# re-execute the stdin script as a nonexistent <stdin> file in each rank.
+sys.argv = ["pytest", test + "::test_the_fused_all_reduces_on_four_ranks[False]"]
+runpy.run_module("pytest", run_name="__main__", alter_sys=True)
 PY
-  srun --overlap --nodes=1 --ntasks=1 --nodelist="$WORKER" --cpus-per-task="$SLURM_CPUS_PER_TASK" \
-    bash -c 'source scripts/gpu_process_variables.sh "$WORK_DIR/envs/verl"
-      test=tests/models/test_qwen3_5_rollout_kernels_hopper_on_gpu.py
-      python -m pytest "$test::test_the_fused_all_reduces_on_four_ranks[False]"' \
-    > "$RUN/allreduce-preflight.log" 2>&1
   wait "$TRAIN_PREFLIGHT_PID"
   TRAIN_PREFLIGHT_PID=
 fi

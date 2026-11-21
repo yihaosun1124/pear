@@ -38,6 +38,8 @@ class SourceCacheTest(unittest.TestCase):
         (info / "RECORD").write_text("transformers/__init__.py,,\ntransformers/data.txt,,\n")
         self.addCleanup(patch.stopall)
         self.real_prefix = str(Path(sys.prefix).resolve())
+        self.real_runtime_environment = {name: os.environ.get(name)
+                                         for name in ("LOCAL_DIR", "SLURM_CLUSTER_NAME")}
         patch.dict(os.environ, SLURM_CLUSTER_NAME="test-cluster", LOCAL_DIR=str(self.local)).start()
         patch.object(sys, "prefix", str(self.environment)).start()
         patch("sysconfig.get_paths", return_value={"purelib": str(self.site)}).start()
@@ -139,6 +141,73 @@ class SourceCacheTest(unittest.TestCase):
                 "assert m.distribution('transformers')._path.name == 'transformers-1.0.dist-info'")
         subprocess.run([sys.executable, "-S", "-c",
                         "import site; site.main(); " + code], env=env, check=True, timeout=30)
+
+    def test_bootstrap_package_resources_and_distribution_identity_are_preserved(self):
+        package = self.site / "omegaconf"
+        package.mkdir()
+        (package / "__init__.py").write_text('VERSION = "bootstrap-copy"\n')
+        (package / "grammar.yaml").write_text("same: resource\n")
+        info = self.site / "omegaconf-1.0.dist-info"
+        info.mkdir()
+        record = info / "RECORD"
+        record.write_text("omegaconf/__init__.py,,\nomegaconf/grammar.yaml,,\n")
+        meta = self.build()
+        self.assertEqual(set(meta["packages"]), {"transformers", "omegaconf"})
+        cache.stage(self.root, self.work, self.local)
+        self.assertEqual((self.local / "python-packages/omegaconf/grammar.yaml").read_bytes(),
+                         (package / "grammar.yaml").read_bytes())
+        marker = self.local / "python-packages/.ready.json"
+        meta["python_env"] = self.real_prefix
+        marker.write_text(json.dumps(meta))
+        env = dict(os.environ, PYTHONPATH=str(STARTUP) + os.pathsep + str(self.site),
+                   PEAR_FAST_PACKAGE_METADATA="0")
+        code = ("import omegaconf,importlib.metadata as m; "
+                "assert omegaconf.VERSION == 'bootstrap-copy'; "
+                "assert '/python-packages/omegaconf/' in omegaconf.__file__; "
+                "assert m.distribution('omegaconf')._path.name == 'omegaconf-1.0.dist-info'")
+        subprocess.run([sys.executable, "-S", "-c", "import site; site.main(); " + code],
+                       env=env, check=True, timeout=30)
+        record.write_text("different bootstrap distribution")
+        with self.assertRaisesRegex(ValueError, "checksum"):
+            cache.stage(self.root, self.work, self.root / "second-node")
+
+    def test_source_snapshot_rejects_unexpected_native_extensions(self):
+        (self.source / "unexpected.abi3.so").write_bytes(b"native payload")
+        with self.assertRaisesRegex(ValueError, "native extensions"):
+            self.build()
+
+    @unittest.skipUnless(importlib.util.find_spec("pytest"), "Requires the target environment's pytest")
+    def test_reused_interpreter_uses_the_real_pytest_entrypoint_for_spawned_ranks(self):
+        test = self.root / "test_spawned_rank.py"
+        test.write_text(
+            "import multiprocessing as mp\n"
+            "def worker(path):\n"
+            "    open(path, 'w').write('rank-ran')\n"
+            "def test_worker(tmp_path):\n"
+            "    output = tmp_path / 'rank'\n"
+            "    process = mp.get_context('spawn').Process(target=worker, args=(str(output),))\n"
+            "    process.start()\n"
+            "    process.join(120)\n"
+            "    assert process.exitcode == 0\n"
+            "    assert output.read_text() == 'rank-ran'\n"
+        )
+        args = ["-q", "-p", "no:cacheprovider", str(test)]
+        env = dict(os.environ)
+        for name, value in self.real_runtime_environment.items():
+            if value is None:
+                env.pop(name, None)
+            else:
+                env[name] = value
+        old = "import pytest; raise SystemExit(pytest.main(" + repr(args) + "))"
+        result = subprocess.run([sys.executable, "-"], input=old, capture_output=True,
+                                text=True, timeout=600, env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("<stdin>", result.stdout + result.stderr)
+        new = ("import sys,runpy; sys.argv=" + repr(["pytest", *args]) +
+               "; runpy.run_module('pytest',run_name='__main__',alter_sys=True)")
+        result = subprocess.run([sys.executable, "-"], input=new, capture_output=True,
+                                text=True, timeout=600, env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

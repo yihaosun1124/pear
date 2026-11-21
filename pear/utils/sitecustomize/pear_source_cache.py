@@ -1,4 +1,4 @@
-"""Stage an identical Transformers source tree on the allocation's local disk.
+"""Stage identical pure Python import sources on the allocation's local disk.
 
 Transformers recursively reads its Python sources to build its lazy import index,
 even when Python bytecode is warm. Keep the installed environment authoritative;
@@ -9,6 +9,14 @@ import json
 import os
 import pathlib
 import sys
+
+
+SOURCE_PACKAGES = {
+    "transformers": "transformers", "pytest": "pytest", "_pytest": "pytest",
+    "pluggy": "pluggy", "iniconfig": "iniconfig", "packaging": "packaging",
+    "pygments": "pygments", "hydra": "hydra_core", "omegaconf": "omegaconf",
+    "antlr4": "antlr4_python3_runtime",
+}
 
 
 def _sha256(path):
@@ -42,6 +50,20 @@ def build(root, work):
     if len(records) != 1:
         raise ValueError("Expected one installed Transformers distribution")
     record = records[0]
+    sources = []
+    record_hashes = {}
+    for package, distribution in SOURCE_PACKAGES.items():
+        directory = site / package
+        if not directory.exists():
+            continue
+        if directory.is_symlink() or environment not in directory.resolve().parents:
+            raise ValueError("Source package is outside this environment")
+        package_records = list(site.glob(distribution + "-*.dist-info/RECORD"))
+        if len(package_records) != 1:
+            raise ValueError("Expected one installed distribution for " + package)
+        package_record = package_records[0]
+        record_hashes[str(package_record)] = _sha256(package_record)
+        sources.append(directory)
     cluster = os.environ.get("SLURM_CLUSTER_NAME")
     if not cluster:
         raise ValueError("Build a source cache in its Slurm cluster")
@@ -57,6 +79,8 @@ def build(root, work):
         if not (member.isfile() or member.isdir()):
             raise ValueError("Source tree contains a link or special file")
         if member.isfile():
+            if path.suffix == ".so" or ".so." in path.name:
+                raise ValueError("Source cache cannot relocate native extensions")
             original = site / path
             before = original.stat()
             files[member.name] = {"size": before.st_size, "sha256": _sha256(original)}
@@ -67,7 +91,8 @@ def build(root, work):
 
     try:
         with tarfile.open(str(temporary), "w:gz") as bundle:
-            bundle.add(str(source), arcname="transformers", filter=include)
+            for directory in sources:
+                bundle.add(str(directory), arcname=directory.name, filter=include)
         if "transformers/__init__.py" not in files:
             raise ValueError("Missing Transformers package initializer")
         digest = _sha256(temporary)
@@ -82,6 +107,7 @@ def build(root, work):
                                             universal_newlines=True).strip(),
         "archive": str(archive), "sha256": digest,
         "record": str(record), "record_sha256": _sha256(record), "files": files,
+        "packages": [directory.name for directory in sources], "records": record_hashes,
     }
     _write_json(cache / "transformers-source-candidate.json", result)
     return result
@@ -110,6 +136,14 @@ def stage(root, work, local, candidate=False):
         raise ValueError("Source cache path is outside this work directory")
     if _sha256(archive) != meta["sha256"] or _sha256(record) != meta["record_sha256"]:
         raise ValueError("Source archive or installed distribution checksum differs")
+    packages = meta.get("packages", ["transformers"])
+    if (not isinstance(packages, list) or "transformers" not in packages
+            or not set(packages).issubset(SOURCE_PACKAGES) or len(set(packages)) != len(packages)):
+        raise ValueError("Unexpected source packages")
+    for path, digest in meta.get("records", {}).items():
+        path = pathlib.Path(path).resolve()
+        if environment not in path.parents or path.name != "RECORD" or _sha256(path) != digest:
+            raise ValueError("Source distribution checksum differs")
     local.mkdir(parents=True, exist_ok=True)
     target = local / "python-packages"
     if target.exists() or target.is_symlink():
@@ -125,7 +159,7 @@ def stage(root, work, local, candidate=False):
             for member in members:
                 path = pathlib.PurePosixPath(member.name)
                 if (path.is_absolute() or ".." in path.parts or not path.parts
-                        or path.parts[0] != "transformers" or member.name in seen
+                        or path.parts[0] not in packages or member.name in seen
                         or not (member.isfile() or member.isdir())):
                     raise ValueError("Unsafe source archive member")
                 seen.add(member.name)
@@ -163,6 +197,11 @@ def activate():
                 or meta.get("python_cache_tag") != sys.implementation.cache_tag
                 or not os.environ.get("SLURM_CLUSTER_NAME")
                 or meta.get("cluster") != os.environ["SLURM_CLUSTER_NAME"]):
+            return False
+        packages = meta.get("packages", ["transformers"])
+        if (not isinstance(packages, list) or not set(packages).issubset(SOURCE_PACKAGES)
+                or any((target / name).is_symlink() or not (target / name / "__init__.py").is_file()
+                       for name in packages)):
             return False
     except (OSError, ValueError, TypeError):
         return False
