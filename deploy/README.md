@@ -269,6 +269,15 @@ cubin 的 Lustre 查询会拖慢每个进程。GPU 环境脚本默认启用 `PEA
 设到 `$LOCAL_DIR/python-bytecode`，允许在该节点磁盘上生成 bytecode，供同一节点后续进程复用。
 共享文件系统仍禁止新 bytecode 写入；不把编译缓存或环境复制到其他集群。
 
+CPU 验证作业内调用 `sbatch` 时，Slurm 可能把已导出的 JIT 缓存变量一起传给 GPU 作业。
+Fir 的第一次 smoke `4899948` 因此在 FlashInfer 预检访问旧 CPU 作业的
+`/localscratch/sunyh.4894675.0`，报 `PermissionError`，尚未进入 RL 训练。
+现在每个 Slurm 作业都会按自己的 `LOCAL_DIR` 重设 vLLM、Inductor、Triton、TileLang、
+Torch extensions、CUDA、FA4 和 FlashInfer 的节点缓存；batch shell 在生成 Ray token 前也初始化这些变量，
+清理阶段同样使用当前作业的路径。共享的 `HF_HOME` 和 `CCACHE_DIR` 保留。
+回归检查为 `python tests/test_gpu_process_variables_on_cpu.py`：覆盖父作业路径泄漏、GPU 分配保留、
+非 Slurm 显式覆盖和不支持磁盘的 Python 缓存回退。
+
 在 CPU 计算作业内完成全部检查后，可保存这个节点已经生成的 bytecode，供该集群 GPU 作业使用。
 下面的发布命令必须放在成功的 pytest 命令之后，并由 `set -e` 保证失败时不执行。
 它只保存 Python bytecode；原生库仍保留在原环境，GPU 启动时顺序预读以减少随机缺页 I/O。

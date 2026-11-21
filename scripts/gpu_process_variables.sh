@@ -7,6 +7,14 @@
 
 PYTHON_ENV=${1:?the Python environment of the processes, one that scripts/install.sh built}
 
+# sbatch can inherit cache paths exported by a parent CPU allocation. Each Slurm
+# job uses its caller's LOCAL_DIR; another job's /localscratch is not accessible.
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+  unset VLLM_CACHE_ROOT TORCHINDUCTOR_CACHE_DIR TRITON_CACHE_DIR
+  unset TILELANG_CACHE_DIR TILELANG_TMP_DIR TORCH_EXTENSIONS_DIR CUDA_CACHE_PATH
+  unset FLASH_ATTENTION_CUTE_DSL_CACHE_DIR FLASHINFER_WORKSPACE_BASE PYTHONPYCACHEPREFIX
+fi
+
 # Keep bytecode writes off shared filesystems. A disk-backed node-local prefix also
 # avoids repeated network lookups for missing .pyc files in each new Ray worker.
 export PYTHONDONTWRITEBYTECODE=1

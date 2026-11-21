@@ -122,6 +122,9 @@ if [ "$MODE" = smoke ]; then
   test ! -e "$RUN/ckpt" || { echo "Smoke RUN already has checkpoints: $RUN" >&2; exit 2; }
 fi
 mkdir -p "$RUN" "$LOCAL_DIR"
+# Initialize the batch shell too: token generation and cleanup run outside the
+# srun workers and must not inherit a submitting CPU job's node-local caches.
+source "$ROOT/scripts/gpu_process_variables.sh" "$WORK_DIR/envs/verl"
 export CCACHE_DIR=$WORK_DIR/cache/ccache XDG_CACHE_HOME=$LOCAL_DIR/xdg-cache
 export RAY_TMPDIR=$LOCAL_DIR/ray HF_HOME=$WORK_DIR/cache/hf HF_HUB_OFFLINE=1
 export NCCL_LAUNCH_ORDER_IMPLICIT=1 NCCL_MNNVL_ENABLE=0 VLLM_ALLREDUCE_USE_FLASHINFER=0
