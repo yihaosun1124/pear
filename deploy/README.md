@@ -43,7 +43,7 @@ torch `2.14.0+cu130`、vLLM `0.34.0`、Ray `2.58.0`、transformers `5.22.2`。
 | 文件 | 原因 |
 | --- | --- |
 | `scripts/install/verl/install.sh` | 离线编译时跳过联网 fetch / uv refresh，同时检查固定 commit 存在 |
-| `scripts/gpu_process_variables.sh` | 加载可用的 C++ 运行库，设置 CUDA stub 的链接路径及 TileLang 本地缓存 |
+| `scripts/gpu_process_variables.sh` | 加载可用的 C++ 运行库，设置 CUDA stub 的链接路径及 TileLang 本地缓存，跳过共享目录的 Python bytecode 写入 |
 | `pear/models/qwen3_5/rollout/hopper/all_reduce.py` | 不支持 NVLink multicast 时全 TP 组一致回退，FP32 求和后一次转 BF16 |
 | `tests/models/test_qwen3_5_rollout_kernels_hopper_on_gpu.py` | 验证自动检测与强制回退路径，保留原有 FP64 误差界 |
 | `pear/rollout/lmcache.py` | NUMA 空闲预留可配置，默认仍为 100 GiB；Rorqual 显式设为 32 GiB |
@@ -383,6 +383,7 @@ Ray token 文件权限仅限当前用户，不要提交到代码仓库或分享�
 | FlashInfer JIT 报 `cannot find -lcuda` | pip CUDA toolkit 缺 driver 链接 stub。按 2.3 节补齐，仅加 LIBRARY_PATH；执行用真实 libcuda.so.1。 |
 | actor 已初始化、rollout 也完成，却在 backward 失败 | FLA backward 延迟导入 TileLang，默认缓存写只读 home。`TILELANG_CACHE_DIR` 和 `TILELANG_TMP_DIR` 必须指向每节点 LOCAL_DIR；仅检查 import 或模型加载不够。 |
 | 多进程共享编译缓存冲突 / 临时目录残留 | JIT、CUDA、Ray 的临时目录按 job id 隔离；退出前归档 Ray 日志、停止 Ray、清理该作业的确切目录。不要假定 /tmp 是独立 SSD；若站点使用 tmpfs，临时文件也计入主存预算。 |
+| CPU 检查很慢并输出 `Timeout (0:05:00)!` 栈 | pytest 的 300 秒 faulthandler 只打印诊断栈，不会终止测试。Fir 实测栈停在 importlib 的 `.pyc` 写入与目录查询，进程等待 Lustre RPC 且读写量继续增长。后续进程设置 `PYTHONDONTWRITEBYTECODE=1`，仍可读取已有 bytecode；先查真实进程、退出码和最终测试结果，不要把这条诊断当失败后重启安装。 |
 | smoke 一直生成却不训练 | 官方 group filter 会丢弃全部奖励相同的组。minimal smoke 关闭它，使零奖励批次也能完成真实更新流程；正式训练保留官方设置。 |
 | `lr_scheduler.step()` 的顺序 warning | streamed AdamW 直接调用底层更新函数，PyTorch 的外层计数可能未识别。不能只凭 warning 判定没有更新；此次独立读取四个 rank 的 optimizer counter，均为 1。 |
 | 磁盘用量突然增长 | smoke 四 rank 的模型 + optimizer checkpoint 实测约 306 GiB/step；正式为 16 rank，复制维度与 TransferQueue 快照可能进一步增加体积，不能直接按 306 GiB 预算。默认保留两份，还需保存时的余量。 |

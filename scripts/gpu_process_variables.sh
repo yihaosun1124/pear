@@ -7,6 +7,10 @@
 
 PYTHON_ENV=${1:?the Python environment of the processes, one that scripts/install.sh built}
 
+# Cold imports can spend minutes creating .pyc files on Lustre. Existing bytecode remains readable;
+# skip new shared-filesystem writes in the many trainer, rollout and simulator processes.
+export PYTHONDONTWRITEBYTECODE=1
+
 # the CUDA toolkit lives in the environment install.sh built, among the packages of its Python, which names their
 # directory; numactl and numastat, for the LMCache sidecars, where the target numactl installed them
 CUDA_HOME=$("$PYTHON_ENV/bin/python" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")/nvidia/cu13
