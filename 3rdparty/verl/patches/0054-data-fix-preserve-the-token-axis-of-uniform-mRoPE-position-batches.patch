@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pear <pear@localhost>
+Date: Mon, 17 Sep 2001 00:00:00 +0000
+Subject: [PATCH] [data] fix: preserve the token axis of uniform mRoPE position
+ batches
+
+---
+ verl/utils/tensordict_utils.py | 38 +++++++++++++++++++++++++++-------
+ 1 file changed, 30 insertions(+), 8 deletions(-)
+
+diff --git a/verl/utils/tensordict_utils.py b/verl/utils/tensordict_utils.py
+index 91d82b15ffd7990c5e50107f3882d83f1558c604..c2f01b4d222aad8771b3f5e8853c44c407cbc0a8 100644
+--- a/verl/utils/tensordict_utils.py
++++ b/verl/utils/tensordict_utils.py
+@@ -177,9 +177,7 @@ def nested_tensor_from_tensor_list(tensors: list[torch.Tensor], ragged_idx: int
+     offsets = torch.zeros(len(tensors) + 1, dtype=torch.long, device=values.device)
+     torch.cumsum(lengths, dim=0, out=offsets[1:])
+ 
+-    nested_tensor = torch.nested.nested_tensor_from_jagged(values=values, offsets=offsets)
+-    nested_tensor._ragged_idx = ragged_idx
+-    return nested_tensor
++    return torch.nested.nested_tensor_from_jagged(values=values, offsets=offsets, jagged_dim=ragged_idx)
+ 
+ 
+ def concat_nested_tensors(tensors: list[torch.Tensor]) -> torch.Tensor:
+@@ -908,11 +906,35 @@ def contiguous(data: TensorDict) -> TensorDict:
+ 
+ 
+ def maybe_fix_3d_position_ids(data: TensorDict):
+-    # note for tensordict with pickle/unpickle. nested tensor in tensordict after consolidate and pickle/unpickle
+-    # will incur indexing error for ragged tensor. This only happens when using 3D position ids in VLMs.
+-    # This is likely a bug in tensordict. As a workaround, we manually set _ragged_index.
+-    if "position_ids" in data.keys() and data["position_ids"].dim() == 3 and data["position_ids"].is_nested:
+-        data["position_ids"]._ragged_idx = 2
++    """Normalize mRoPE positions to [batch, channels, jagged_tokens].
++
++    TensorDict serialization can lose the ragged dimension. Equal-length
++    trajectories can also arrive packed along channels instead of tokens.
++    Changing _ragged_idx alone leaves their values and offsets inconsistent.
++    """
++    positions = data.get("position_ids")
++    if positions is None or positions.dim() != 3 or not positions.is_nested:
++        return
++
++    values, offsets = positions.values(), positions.offsets()
++    lengths = positions.lengths()
++    total = int(offsets[-1])
++    packed_axes = [axis for axis in range(values.dim()) if values.shape[axis] == total]
++    if len(packed_axes) == 1:
++        packed_axis = packed_axes[0]
++    else:
++        # The shape retains the original jagged dimension even when its
++        # private _ragged_idx attribute was changed during serialization.
++        packed_axis = 0 if isinstance(positions.shape[1], torch.SymInt) else 1
++
++    if packed_axis == 1:
++        data["position_ids"] = torch.nested.nested_tensor_from_jagged(
++            values=values, offsets=offsets, lengths=lengths, jagged_dim=2
++        )
++    else:
++        sizes = (offsets.diff() if lengths is None else lengths).tolist()
++        rows = [values.narrow(0, start, size) for start, size in zip(offsets[:-1].tolist(), sizes)]
++        data["position_ids"] = nested_tensor_from_tensor_list(rows, ragged_idx=2)
+ 
+ 
+ def list_of_dict_to_tensordict(list_of_dicts: list[dict[str, Any]]) -> TensorDict:

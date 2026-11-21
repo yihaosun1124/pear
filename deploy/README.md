@@ -47,6 +47,7 @@ torch `2.14.0+cu130`、vLLM `0.34.0`、Ray `2.58.0`、transformers `5.22.2`。
 | `pear/models/qwen3_5/rollout/hopper/all_reduce.py` | 不支持 NVLink multicast 时全 TP 组一致回退，FP32 求和后一次转 BF16 |
 | `tests/models/test_qwen3_5_rollout_kernels_hopper_on_gpu.py` | 验证自动检测与强制回退路径，保留原有 FP64 误差界 |
 | `pear/rollout/lmcache.py` | NUMA 空闲预留可配置，默认仍为 100 GiB；Rorqual 显式设为 32 GiB |
+| `3rdparty/verl/patches/0054-data-fix-preserve-the-token-axis-of-uniform-mRoPE-position-batches.patch` | 统一 mRoPE 位置张量的 token 轴，保留正确的 values、offsets 和序列化元数据 |
 
 迁移时 clone 本文的 fork `drac` 分支，即可获得上述修复和 `deploy/`；
 仅 clone 官方仓库不会得到这些修改。不要删除 `src/LIBERO` 或 `3rdparty/verl/src`：
@@ -54,7 +55,7 @@ torch `2.14.0+cu130`、vLLM `0.34.0`、Ray `2.58.0`、transformers `5.22.2`。
 
 ## 2. 安装：登录节点下载，CPU 计算节点编译
 
-现有部署已安装完毕，无需重新安装。以下记录从头部署的步骤。
+已完成该站部署的环境无需重复安装。以下记录从头部署的步骤。
 在可联网的登录节点准备源码、Python 包和模型；较重的 CUDA 编译放在 CPU 计算节点，
 显式指定 H100 的 `CUDA_ARCH=9.0`，不需要占用 GPU 编译。
 
@@ -240,6 +241,23 @@ bash scripts/install.sh verl
 ```
 
 `--no-index` 仅用于这次本地 LMCache 安装，不全局覆盖后续安装器的索引设置。
+
+若依赖安装已完成、CPU 作业在最终验证阶段达到时限，可直接验证现有环境。
+Fir 的一次 1 小时 CPU 作业在共享文件查询中超时；重提验证时使用 8 CPU、64G、3 小时，
+把以下 17 项环境检查、18 项 LMCache 检查及 6 项位置张量回归放进同一 Python 进程，
+减少重复冷导入。正式 64 卡训练仍申请 2 小时。临时缓存放在计算节点本地：
+
+```bash
+export LOCAL_DIR=${SLURM_TMPDIR:-/tmp/$USER}/pear-cpu-$SLURM_JOB_ID
+mkdir -p "$LOCAL_DIR"
+source scripts/gpu_process_variables.sh "$WORK_DIR/envs/verl"
+python -m pytest -vv --durations=20 tests/test_training_environment_on_cpu.py \
+  tests/rollout/test_lmcache_on_cpu.py tests/test_verl_position_ids_on_cpu.py
+```
+
+验证作业应为 TERM/INT 设置非零退出，并以 `sacct` 的最终状态核对结果。
+旧作业 `4838738` 的 EXIT trap 曾在 Slurm TIMEOUT 后写出 `exit_code=0`，原收据保留，
+它不能证明这些检查已完成。
 
 ## 3. 提交 smoke test 与正式训练
 
@@ -472,6 +490,8 @@ Ray token 文件权限仅限当前用户，不要提交到代码仓库或分享�
 | CPU 检查很慢并输出 `Timeout (0:05:00)!` 栈 | pytest 的 300 秒 faulthandler 只打印诊断栈，不会终止测试。Fir 实测栈停在 importlib 的 `.pyc` 写入与目录查询，进程等待 Lustre RPC 且读写量继续增长。后续进程设置 `PYTHONDONTWRITEBYTECODE=1`，仍可读取已有 bytecode；先查真实进程、退出码和最终测试结果，不要把这条诊断当失败后重启安装。 |
 | NVIDIA worker 报 `Please don't set ROCR_VISIBLE_DEVICES when HIP/CUDA_VISIBLE_DEVICES is set` | Rorqual 的 GPU 预检已通过，但 Ray worker 收到了同时存在的 CUDA / ROCR 设备变量。NVIDIA 运行环境在每个 Slurm step 内加载 `gpu_process_variables.sh` 时清除 `ROCR_VISIBLE_DEVICES` 和 `HIP_VISIBLE_DEVICES`，保留 CUDA 分配；不修改 GPU 数量或训练参数。 |
 | 登录节点安装 GPU 依赖被 `Killed`，退出 137 | Tamia 在完成大包下载后安装阶段被 SIGKILL；日志本身不能证明具体 OOM 原因。保留模型、venv 和已完成的 uv 缓存，在有明确 CPU / 内存配额的计算作业中修复安装；可能写到一半的包强制重装，不从零清空环境。 |
+| 更新 actor 时 `split_with_sizes` 报序列长度 5140、分片长度却都是 4 | 等长 mRoPE 位置张量可能沿通道轴打包。只修改 `_ragged_idx` 会让存储和 offsets 指向不同轴。补丁 0054 使用公开的 `jagged_dim` 构造参数，并在修复序列化元数据时按真实打包轴重建 token 布局。六项 CPU 回归覆盖等长、变长、重复索引及 TensorDict 序列化；该站真实 RL 更新仍需 smoke 验证。 |
+| 结果 JSON 为 0，但 CPU 验证日志只有部分测试 | 核对 `sacct`：TIMEOUT/CANCELLED 优先于旧 EXIT trap 的结果文件。依赖完整时可按 2.4 节合并验证，记录逐测试进度并正确处理 TERM；不要据此放行 GPU 训练。 |
 | smoke 一直生成却不训练 | 官方 group filter 会丢弃全部奖励相同的组。minimal smoke 关闭它，使零奖励批次也能完成真实更新流程；正式训练保留官方设置。 |
 | `lr_scheduler.step()` 的顺序 warning | streamed AdamW 直接调用底层更新函数，PyTorch 的外层计数可能未识别。不能只凭 warning 判定没有更新；此次独立读取四个 rank 的 optimizer counter，均为 1。 |
 | 磁盘用量突然增长 | smoke checkpoint 实测约 306 GiB/step。FSDP2 HSDP 去重复制维度，不能简单按 rank 数倍增；正式的 TransferQueue 快照等额外开销仍需实测。官方每步保存、保留两份，加独立 smoke 约需 918 GiB，另留余量。 |
