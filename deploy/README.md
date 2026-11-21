@@ -409,6 +409,20 @@ Trillium 原始 smoke 使用整节点内存；下述 Rorqual smoke 已在 450G �
 
 存储也要预留：按 smoke 实测约 306 GiB/份估算，独立 smoke 加正式保留的两份 checkpoint
 约需 918 GiB，另留 TransferQueue、日志和安装缓存余量；正式大小仍需实测。
+其中模型主参数以 FP32 保存，约 102 GiB；AdamW 的一阶、二阶动量也以 FP32 保存，合计约
+204 GiB。即使只训练一步，保存的也是完整状态。分片总量已包含所有写文件的 rank，不能再乘卡数。
+
+TransferQueue 快照还包含多模态 `pixel_values`、token、位置编码和 score-centering 使用的
+`rollout_topk_ids` / `rollout_topk_log_probs`。实测后两项分别为 int32 / FP32，每个 token 各有
+32 项，合计 256 字节/token。以 1024 条、每条 164096 token 的允许长度场景计算，仅这两项就约
+40.1 GiB/份；这是场景估算，实际大小取决于完成的轨迹长度、图像数及队列中保存的样本数。
+不能从短 smoke 的队列大小推断正式长轨迹的额外空间。
+
+零梯度 smoke 的优化器可能包含大量连续零区。静止、完整的 checkpoint 可以通过内容等价的
+稀疏副本节省实际占盘，但必须先核对完整 SHA256、逻辑大小、权限、mtime 和正常恢复读取，再原子
+替换原件；不得处理仍在写入的文件。一次真实验证将 306 GiB 逻辑大小的 smoke 核心文件实际占盘
+降至约 118 GiB，完整内容不变。正式训练的动量可能更密集，空间预算不能沿用该节省比例。
+重新核算时，已有 smoke 已计入 quota.used，不要再次从 quota.free 扣除；同时确认配额用量已完成结算。
 同一个 Lustre 文件系统可能承载多个目录配额，`lfs quota -u` 的跨目录用户用量不能代替目标目录配额。
 支持 Lustre project quota 的站点可这样检查实际工作目录：
 
