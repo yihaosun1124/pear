@@ -382,6 +382,24 @@ Trillium 原始 smoke 使用整节点内存；下述 Rorqual smoke 已在 450G �
 `STEPS` / `EPOCHS` 是上限，作业也可能先到 Slurm wall time；自动恢复只读取已经保存的 checkpoint。
 默认每次提交创建新 RUN，要续训需再次传入相同的 `RUN=...`。
 
+正式任务的 checkpoint 要按实际 FSDP mesh 检查。本版本 FSDP2 HSDP 会去重复制维度：
+16 个训练 rank、FSDP8 的常规 2×8 mesh 中，仅 rank 0–7 写 model / optim 分片，
+全部 16 个 rank 各写一份 extra_state，即 32 个核心分片，另外还有 HF 元数据和 TransferQueue 状态。
+这些文件的 world size 仍是 16；不能要求每个 rank 都有重复的 model / optim，
+也不能用 world-size-4 的 smoke checkpoint 恢复正式训练。
+恢复前核对实际 mesh 的分片拥有者、所有 rank 的 extra_state、训练 step 和完整 TransferQueue 快照。
+
+存储也要预留：按 smoke 实测约 306 GiB/份估算，独立 smoke 加正式保留的两份 checkpoint
+约需 918 GiB，另留 TransferQueue、日志和安装缓存余量；正式大小仍需实测。
+同一个 Lustre 文件系统可能承载多个目录配额，`lfs quota -u` 的跨目录用户用量不能代替目标目录配额。
+支持 Lustre project quota 的站点可这样检查实际工作目录：
+
+```bash
+PROJECT_ID=$(lfs project -d "$WORK_DIR" | awk '{print $1}')
+[[ $PROJECT_ID =~ ^[0-9]+$ ]]
+lfs quota -p "$PROJECT_ID" -h "$WORK_DIR"
+```
+
 ## 4. 成功判据与已有验证
 
 整理后的两个入口通过 Bash 语法、ShellCheck 和嵌入 Python 语法检查。
@@ -456,7 +474,7 @@ Ray token 文件权限仅限当前用户，不要提交到代码仓库或分享�
 | 登录节点安装 GPU 依赖被 `Killed`，退出 137 | Tamia 在完成大包下载后安装阶段被 SIGKILL；日志本身不能证明具体 OOM 原因。保留模型、venv 和已完成的 uv 缓存，在有明确 CPU / 内存配额的计算作业中修复安装；可能写到一半的包强制重装，不从零清空环境。 |
 | smoke 一直生成却不训练 | 官方 group filter 会丢弃全部奖励相同的组。minimal smoke 关闭它，使零奖励批次也能完成真实更新流程；正式训练保留官方设置。 |
 | `lr_scheduler.step()` 的顺序 warning | streamed AdamW 直接调用底层更新函数，PyTorch 的外层计数可能未识别。不能只凭 warning 判定没有更新；此次独立读取四个 rank 的 optimizer counter，均为 1。 |
-| 磁盘用量突然增长 | smoke 四 rank 的模型 + optimizer checkpoint 实测约 306 GiB/step；正式为 16 rank，复制维度与 TransferQueue 快照可能进一步增加体积，不能直接按 306 GiB 预算。默认保留两份，还需保存时的余量。 |
+| 磁盘用量突然增长 | smoke checkpoint 实测约 306 GiB/step。FSDP2 HSDP 去重复制维度，不能简单按 rank 数倍增；正式的 TransferQueue 快照等额外开销仍需实测。官方每步保存、保留两份，加独立 smoke 约需 918 GiB，另留余量。 |
 
 GPU 环境检查应在已分配的 H100 上执行：加载 `scripts/gpu_process_variables.sh` 后运行
 `python -m pytest tests/test_training_environment_on_gpu.py`。本次为 3/3 通过；
