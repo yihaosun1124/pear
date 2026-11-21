@@ -13,6 +13,8 @@
 ## 1. 路径与版本
 
 以下以 `/scratch/$USER/pear` 和 `/scratch/$USER/pear_work` 为例。
+实际迁移时先查看 `$SCRATCH`：Tamia 为 `/scratch/s/$USER`，应使用
+`PEAR_ROOT=$SCRATCH/pear WORK_DIR=$SCRATCH/pear_work`，并覆盖 Slurm 日志路径。
 本次用户为 `sunyh`，实际部署路径就是 `/scratch/sunyh/pear`。
 
 | 内容 | 路径 |
@@ -60,10 +62,9 @@ torch `2.14.0+cu130`、vLLM `0.34.0`、Ray `2.58.0`、transformers `5.22.2`。
 ```bash
 # 新部署才需要 clone；已有当前适配工作树时直接 cd。
 cd /scratch/$USER
-git clone https://github.com/mit-han-lab/pear.git
+git clone --branch drac --single-branch https://github.com/yihaosun1124/pear.git
 cd pear
-git checkout 2a81b2eec95e6e6f19c3fc0a80a38aebb40a30e2
-# 此处同步上节列出的兼容性修复与 deploy/，再继续。
+# drac 分支包含部署入口及兼容性修复；upstream 仍为官方固定版本。
 
 export WORK_DIR=/scratch/$USER/pear_work
 mkdir -p "$WORK_DIR/logs"
@@ -381,3 +382,48 @@ GPU 环境检查应在已分配的 H100 上执行：加载 `scripts/gpu_process_
 `python -m pytest tests/test_training_environment_on_gpu.py`。本次为 3/3 通过；
 真实 LIBERO 也执行过 5 个原生动作并返回两张 512×512 图像。
 不要把登录节点的无 GPU 导入提示当成训练 GPU 的验收结果。
+
+
+## 8. 多集群迁移
+
+当前代码源为 [yihaosun1124/pear 的 drac 分支](https://github.com/yihaosun1124/pear/tree/drac)，
+由官方仓库 fork；`main` 保持官方代码，部署修复提交在 `drac`。
+环境、模型、wheel、运行日志和 checkpoint 不上传 GitHub。
+
+2026-11-21 已通过真实登录、Slurm association 和 `sbatch --test-only` 核对下表。
+`--test-only` 只校验请求，不表示已经提交或已经跑通训练。
+
+| 集群 | 仓库 / 运行目录前缀 | GPU account | GPU partition | 每节点 CPU | 内存请求 |
+| --- | --- | --- | --- | --- | --- |
+| Tamia | `/scratch/s/sunyh` | `aip-plbacon` | `gpubase_bynode_b1` | 48 | `450G` |
+| Fir | `/scratch/sunyh` | `rrg-bengioy-ad_gpu` | `gpubase_bynode_b1` | 48 | `450G` |
+| Rorqual | `/scratch/sunyh` | `rrg-bengioy-ad_gpu` | `gpubase_bynode_b1` | 64 | `450G` |
+
+这些 H100 节点均为每节点 4 卡。不能沿用原 96 CPU 请求，否则会超出节点资源。
+48 CPU 时 Ray 使用 40 CPU，仍满足正式配置的每节点 32 个 LIBERO server；训练超参数不变。
+三个站点的 450G 请求均通过提交校验；运行中的 cgroup 上限仍需在实际分配后核对。
+
+```bash
+# 在目标集群登录节点执行。按上表填写 ACCOUNT 和 CPUS。
+ROOT=$SCRATCH/pear
+WORK=$SCRATCH/pear_work
+ACCOUNT=rrg-bengioy-ad_gpu  # Tamia 改为 aip-plbacon
+CPUS=48                   # Rorqual 改为 64
+mkdir -p "$WORK/logs"
+cd "$ROOT"
+sbatch --account="$ACCOUNT" --partition=gpubase_bynode_b1 \
+  --cpus-per-task="$CPUS" --gpus-per-node=h100:4 --mem=450G \
+  --output="$WORK/logs/%x-%j.out" --error="$WORK/logs/%x-%j.err" \
+  deploy/smoke_test.sbatch PEAR_ROOT="$ROOT" WORK_DIR="$WORK"
+
+# 只有该集群的 smoke 验证真实 step、指标和完整 checkpoint 后才运行正式任务。
+sbatch --account="$ACCOUNT" --partition=gpubase_bynode_b1 --time=02:00:00 \
+  --cpus-per-task="$CPUS" --gpus-per-node=h100:4 --mem=450G \
+  --output="$WORK/logs/%x-%j.out" --error="$WORK/logs/%x-%j.err" \
+  deploy/train.sbatch PEAR_ROOT="$ROOT" WORK_DIR="$WORK"
+```
+
+在各站重新创建 Python 环境，避免复制含绝对路径的 venv 和 editable 安装。
+同为 x86_64 / H100 / 相同 Python、torch、源码和补丁版本时，可复用本部署已验证的
+FA2、FA3、LMCache wheel；先核对 SHA-256、编译输入和 ABI，再进行 CPU 环境检查和该站 GPU smoke。
+不要复用跨架构的二进制或旧 JIT 缓存；缺少匹配 wheel 时按第 2 节在 CPU 计算节点重新编译。

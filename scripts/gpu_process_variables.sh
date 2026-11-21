@@ -12,7 +12,7 @@ PYTHON_ENV=${1:?the Python environment of the processes, one that scripts/instal
 CUDA_HOME=$("$PYTHON_ENV/bin/python" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")/nvidia/cu13
 export CUDA_HOME
 export PATH=$PYTHON_ENV/bin:$CUDA_HOME/bin:$WORK_DIR/envs/numactl/bin:$WORK_DIR/bin:$PATH
-# Trillium's system C++ runtime predates the GCC used to build the native extensions.
+# Some sites' system C++ runtimes predate the GCC used to build the native extensions.
 if [ -d "$WORK_DIR/runtime/lib" ]; then
   export LD_LIBRARY_PATH=$WORK_DIR/runtime/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 fi
