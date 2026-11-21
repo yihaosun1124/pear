@@ -43,7 +43,7 @@ torch `2.14.0+cu130`、vLLM `0.34.0`、Ray `2.58.0`、transformers `5.22.2`。
 | 文件 | 原因 |
 | --- | --- |
 | `scripts/install/verl/install.sh` | 离线编译时跳过联网 fetch / uv refresh，同时检查固定 commit 存在 |
-| `scripts/gpu_process_variables.sh` | 加载可用的 C++ 运行库，设置 CUDA stub 的链接路径及 TileLang 本地缓存，跳过共享目录的 Python bytecode 写入 |
+| `scripts/gpu_process_variables.sh` | 加载可用的 C++ 运行库，设置 CUDA stub / TileLang 路径，跳过共享 bytecode 写入，并清理 NVIDIA 进程中的 AMD 设备变量 |
 | `pear/models/qwen3_5/rollout/hopper/all_reduce.py` | 不支持 NVLink multicast 时全 TP 组一致回退，FP32 求和后一次转 BF16 |
 | `tests/models/test_qwen3_5_rollout_kernels_hopper_on_gpu.py` | 验证自动检测与强制回退路径，保留原有 FP64 误差界 |
 | `pear/rollout/lmcache.py` | NUMA 空闲预留可配置，默认仍为 100 GiB；Rorqual 显式设为 32 GiB |
@@ -324,8 +324,9 @@ rollout 的显存也不能按全局 48 卡合并计算：每个副本独立使�
 160k 序列和 1024 条轨迹完整 batch 的激活、主存与通信开销仍需实测，不能从短 smoke 保证。
 SP8 跨节点的通信会比同机 8 卡布局更重。450G 是通用脚本的内存申请目标，不能自动消除这些内存开销；
 Trillium 不能通过该参数设置硬限制。
-需要在相同限制下实际训练，再通过 Slurm cgroup / sacct 统计验证；此前成功 smoke 使用整节点内存，
-不能当成 450G 上限下已经验收通过。
+需要在相同限制下实际训练，再通过 Slurm cgroup / sacct 统计验证。
+Trillium 原始 smoke 使用整节点内存；下述 Rorqual smoke 已在 450G 硬限制下完成，
+其短序列、4 卡训练结果仍不能保证 64 卡正式长上下文负载。
 
 异步 rollout 会预取下一批，所以日志里的累计生成轨迹可以多于实际训练 batch。
 开启 group filter 后，奖励完全相同的组会被丢弃并继续采样，生成数量还会进一步增加。
@@ -336,7 +337,8 @@ Trillium 不能通过该参数设置硬限制。
 
 整理后的两个入口通过 Bash 语法、ShellCheck 和嵌入 Python 语法检查。
 正式配置通过 verl `validate_config`；统一输出路径和实验名后，与官方 recipe 的完整配置比较，
-差异仅为所要求的 GPU 拓扑和 LMCache 64 GiB。64 卡及 450G 约束下尚未执行 GPU 训练。
+默认差异为所要求的 GPU 拓扑和 LMCache 64 GiB；Rorqual 另使用批准的 NUMA 预留 32 GiB。
+64 卡正式负载尚未执行；450G 限制下的 Rorqual smoke 结果记录在下方。
 Trillium 的提交检查确认拒绝 `--mem=450G`，不是一次成功的 450G 作业验收。
 
 smoke 先检查 FlashInfer JIT、四卡 all-reduce 数值和 Hopper delta-rule backward，
@@ -365,6 +367,22 @@ Ray token 文件权限仅限当前用户，不要提交到代码仓库或分享�
 `completion-audit.json`、`verified-step.json`、`slurm-accounting.txt`、`job-result.json`、
 `source.patch` 与当时的 `launch/`。此次整理未改写历史运行记录；旧记录中的旧脚本名属于当次快照。
 代码目录不再保留重复的 `evidence/` 和临时排障脚本。
+
+2026-11-21 的 Rorqual 验证：
+
+- smoke 作业 `27340419`，`rg32001` 训练 + `rg32003` rollout，各 4 H100；`COMPLETED/0:0`，耗时 17 分 45 秒。
+- 1 个 RL step 消耗 8 条轨迹，异步预取另生成 8 条；12 个 world-size-4 checkpoint 分片共 328288668516 字节，约 306 GiB。
+- 独立读取四个 optimizer 分片，每个 rank 的 1184 个 step counter 均为 1；梯度指标有限。
+  本批奖励、优势、梯度范数均为 0，仅验证更新链路，不代表策略学习效果。
+- LMCache 实际 pin 完整 64 GiB，指定 NUMA 域占进程内存约 99.8%，保留 32 GiB 启动预留。
+- 两节点 cgroup `memory.max` 均为 483183820800 字节（450 GiB）。保存 checkpoint 期间采样的训练节点峰值为 448.14 GiB，
+  这是已观测到的峰值下限，非退出前最终峰值；内存余量很小，正式负载仍需监控。
+- 证据在该站 `pear_work/runs/smoke-27340419/` 的 `independent-audit-27340419.json`、`verified-step.json`、
+  `numa-placement-27340419.log`、`memory-27340419.jsonl` 和原始日志中。
+
+前一次 Rorqual smoke `27337745` 在 worker 初始化时因 CUDA / ROCR 变量冲突失败；修复后才重提，失败日志保留。
+正式作业 `27340420` 已按 16 节点 × 4 H100、16 卡训练 + 48 卡 rollout、每节点 450G、2 小时提交，
+并在 smoke 成功后解除依赖，训练超参数沿用本文正式配置。
 
 ## 5. 本次排查出的坑
 
