@@ -119,7 +119,40 @@ LMCache 使用官方提供的补丁版本，即使训练时关闭其 sidecar，�
 让解析器缓存其完整 runtime 依赖，再提交离线安装检查。仅下载 `aiofile` 不够：
 `aiofiles` 是另一个包，还需要 wheel 元数据声明的 cloud / gRPC / Redis 等依赖。
 若此时其他安装进程正在修改同一个环境，可使用 `uv pip install --target` 临时目录预缓存这些包，
-完成后删除临时目录；不要同时修改正在安装的 venv。
+完成后删除临时目录；不要同时修改正在安装的 venv。但这不能代替离线解析检查：
+Fir 实测临时目录安装成功后，离线解析仍会按 registry 元数据查找 `aiofiles` 并失败。
+此时应保存显式 wheel 目录，并在 CPU 作业中使用 `--no-index --find-links`。
+
+下面为当前固定版本准备缺少的 13 个 LMCache runtime 包；其余依赖来自已安装的 GPU 环境。
+在联网阶段、GPU 依赖安装结束后执行。版本和文件哈希直接从官方 constraints 提取，
+不使用另一套版本约束；升级 LMCache wheel 后需重新核对这份缺包列表。
+
+```bash
+export RUNTIME_WHEELS=$WORK_DIR/wheels/lmcache-runtime
+mkdir -p "$RUNTIME_WHEELS"
+"$PYTHON" - "$ROOT/scripts/install/verl/constraints.txt" "$RUNTIME_WHEELS/requirements.txt" <<'PY'
+import pathlib
+import sys
+
+needed = {
+    "aiofile", "aiofiles", "awscrt", "cufile-python", "google-cloud-bigtable",
+    "google-cloud-core", "google-cloud-monitoring", "google-crc32c",
+    "grpc-google-iam-v1", "grpcio-observability", "grpcio-status", "redis",
+    "sortedcontainers",
+}
+lines = pathlib.Path(sys.argv[1]).read_text().replace("\\\n", "").splitlines()
+selected = [line for line in lines if line.split("==", 1)[0] in needed]
+assert {line.split("==", 1)[0] for line in selected} == needed
+assert all("--hash=sha256:" in line for line in selected)
+pathlib.Path(sys.argv[2]).write_text("\n".join(selected) + "\n")
+PY
+"$PYTHON" -m pip download --no-deps --require-hashes --only-binary=:all: \
+  -r "$RUNTIME_WHEELS/requirements.txt" -d "$RUNTIME_WHEELS"
+(
+  cd "$RUNTIME_WHEELS"
+  sha256sum ./*.whl > SHA256SUMS
+)
+```
 
 ### 2.3 补齐 FlashInfer JIT 链接所需的 driver stub
 
@@ -191,6 +224,22 @@ python -m pytest tests/test_training_environment_on_cpu.py
 
 不需要删除环境重装；官方 installer 使用输入哈希和缓存 wheel 跳过已完成的构建。
 本次 CPU 环境检查为 17/17 通过。
+
+若采用上述显式 runtime wheel 目录，在 CPU 作业中、调用官方 installer 之前，
+先对选定的 LMCache wheel 做完整离线解析并安装。此处沿用上面选定的 `WHEELS[0]`，
+`RUNTIME_WHEELS` 要指向实际保存的目录：
+
+```bash
+export RUNTIME_WHEELS=$WORK_DIR/wheels/lmcache-runtime
+(cd "$RUNTIME_WHEELS" && sha256sum --check SHA256SUMS)
+uv pip install --dry-run --offline --no-index --find-links "$RUNTIME_WHEELS" \
+  --python "$WORK_DIR/envs/verl/bin/python" "${WHEELS[0]}"
+uv pip install --offline --no-index --find-links "$RUNTIME_WHEELS" \
+  --python "$WORK_DIR/envs/verl/bin/python" "${WHEELS[0]}"
+bash scripts/install.sh verl
+```
+
+`--no-index` 仅用于这次本地 LMCache 安装，不全局覆盖后续安装器的索引设置。
 
 ## 3. 提交 smoke test 与正式训练
 
@@ -395,6 +444,7 @@ Ray token 文件权限仅限当前用户，不要提交到代码仓库或分享�
 | 计算节点连不上 PyPI / GitHub | 先在登录节点缓存包、源码、CUTLASS 和固定 commit，再离线编译。`UV_OFFLINE=1` 不会自动下载缺失的内容。 |
 | `--refresh-package` 与 offline 冲突 / git fetch 卡住 | installer 的本地修复在 offline 模式跳过这两步，仍验证固定 commit。 |
 | 缺 `pip`、`setuptools_scm`、`ninja` 或 LMCache runtime 依赖 | 先下载构建工具；若 wheel 已构建则联网安装该 wheel 补齐依赖，再重跑安装检查，不必重新编译全部源码。 |
+| 已用临时 `--target` 预缓存，离线仍称 `aiofiles` 需要下载 | 缓存中的 registry 元数据不一定满足实际解析路径。按 2.2 节保存带官方哈希的 runtime wheels，再用局部 `--no-index --find-links` 完成 LMCache 离线解析和安装；目录存在本身不能证明解析成功。 |
 | `GLIBCXX_3.4.30` 缺失 | 系统 libstdc++ 太旧；直接使用 CVMFS 的新版库又可能要求系统没有的 glibc 2.36。使用 Mesa conda prefix 中兼容当前系统的 libstdc++ / libgcc_s，复制到 runtime/lib。 |
 | rollout 在 NVLink multicast 初始化失败 | H100 名称不保证有 multicast。所有 TP rank 先一致投票，不支持则使用 vLLM all-reduce + PEAR add/RMSNorm。BF16 中间累加曾超出原误差界，已改为 FP32 求和后一次 BF16 舍入，未放宽数值检查。 |
 | 预检意外编译 FlashInfer 通信模块 | 预检不在 Ray runtime_env 内，需要显式匹配 `NCCL_MNNVL_ENABLE=0`、`VLLM_ALLREDUCE_USE_FLASHINFER=0`、`NCCL_LAUNCH_ORDER_IMPLICIT=1`。 |
