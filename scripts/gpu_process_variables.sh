@@ -7,9 +7,17 @@
 
 PYTHON_ENV=${1:?the Python environment of the processes, one that scripts/install.sh built}
 
-# Cold imports can spend minutes creating .pyc files on Lustre. Existing bytecode remains readable;
-# skip new shared-filesystem writes in the many trainer, rollout and simulator processes.
+# Keep bytecode writes off shared filesystems. A disk-backed node-local prefix also
+# avoids repeated network lookups for missing .pyc files in each new Ray worker.
 export PYTHONDONTWRITEBYTECODE=1
+if [ -d "$LOCAL_DIR" ]; then
+  case "$(stat -f -c %T "$LOCAL_DIR")" in
+    xfs | ext2/ext3 | btrfs | zfs)
+      export PYTHONPYCACHEPREFIX=$LOCAL_DIR/python-bytecode
+      unset PYTHONDONTWRITEBYTECODE
+      ;;
+  esac
+fi
 
 # Some Slurm GRES configurations export both NVIDIA and AMD device selectors.
 # This CUDA runtime uses NVIDIA GPUs; verl rejects ROCR together with CUDA/HIP visibility.

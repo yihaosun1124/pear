@@ -66,6 +66,7 @@ NUMASTAT = "#!/bin/sh\necho 'Total 1000.00 0.00 1000.00'\n"
 GPUS = "2,3"  # the replica's GPUs, the second group of two on its machine
 ROOMY_NODE_MB = 1 << 20  # a NUMA node with room for the tier and its headroom
 END_TIMEOUT_S = 10.0  # for a killed stand-in to end
+BOOTSTRAP_TIMEOUT_S = 120.0  # the stand-in interpreter may cold-import from a shared filesystem
 POLL_S = 0.05  # between two looks at the stand-in
 
 
@@ -189,6 +190,30 @@ def stand_in(tmp_path, monkeypatch):
     yield stand_in
 
     stand_in.kill()
+
+
+@pytest.fixture
+def pin_timeout_stand_in(stand_in, monkeypatch):
+    # A 0.5-second pin deadline must exercise the stalled tier, rather than the
+    # interpreter's bootstrap on Lustre. Start the original pin wait only after
+    # this stand-in has emitted its first partial-progress line (or has exited).
+    wait_pinned = LMCacheSidecar._wait_pinned
+
+    def wait_after_bootstrap(sidecar, process, numa_node, log_offset):
+        deadline = time.monotonic() + BOOTSTRAP_TIMEOUT_S
+        partial = b"now total is 512 MB / 1024 MB"
+        while process.poll() is None:
+            if partial in sidecar.log_path.read_bytes()[log_offset:]:
+                break
+            if time.monotonic() >= deadline:
+                process.kill()
+                process.wait(timeout=END_TIMEOUT_S)
+                pytest.fail("LMCache test stand-in did not finish interpreter bootstrap")
+            time.sleep(POLL_S)
+        return wait_pinned(sidecar, process, numa_node, log_offset)
+
+    monkeypatch.setattr(LMCacheSidecar, "_wait_pinned", wait_after_bootstrap)
+    return stand_in
 
 
 @pytest.fixture
@@ -333,7 +358,8 @@ def test_a_sidecar_that_exits_while_it_starts_raises_with_its_status(stand_in, m
         Replica.server(stand_in)._preprocess_engine_kwargs({})
 
 
-def test_a_sidecar_that_does_not_pin_its_tier_in_time_is_killed(stand_in, monkeypatch):
+def test_a_sidecar_that_does_not_pin_its_tier_in_time_is_killed(pin_timeout_stand_in, monkeypatch):
+    stand_in = pin_timeout_stand_in
     monkeypatch.setenv("SIDECAR_MODE", "stall")
     monkeypatch.setattr(LMCacheSidecar, "PIN_TIMEOUT_S", 0.5)
 
@@ -343,7 +369,8 @@ def test_a_sidecar_that_does_not_pin_its_tier_in_time_is_killed(stand_in, monkey
     assert stand_in.has_ended()
 
 
-def test_the_pinned_line_of_an_earlier_sidecar_in_the_log_is_not_this_one_s(stand_in, monkeypatch):
+def test_the_pinned_line_of_an_earlier_sidecar_in_the_log_is_not_this_one_s(pin_timeout_stand_in, monkeypatch):
+    stand_in = pin_timeout_stand_in
     # a resumed run appends to the log of the run before
     earlier_line = "now total is 1024 MB / 1024 MB\n"
     stand_in.log_dir.mkdir()

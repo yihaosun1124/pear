@@ -163,6 +163,64 @@ echo "mode=$MODE job=$SLURM_JOB_ID nodes=$SLURM_JOB_NODELIST commit=$(git rev-pa
 git diff --no-ext-diff --binary > "$RUN/source-$SLURM_JOB_ID.patch"
 mkdir -p "$RUN/launch-$SLURM_JOB_ID"
 cp deploy/{smoke_test.sbatch,train.sbatch} "$RUN/launch-$SLURM_JOB_ID/"
+
+# A successful CPU validation may seed bytecode for this exact environment and checkout.
+# The archive stays within its Slurm cluster; native libraries are only read to warm the local page cache.
+if [ -f "$WORK_DIR/cache/python-bytecode-ready.json" ]; then
+  srun --nodes="$TOTAL_NODES" --ntasks="$TOTAL_NODES" --ntasks-per-node=1 --cpus-per-task=1 \
+    bash -c '/usr/bin/python3 -B -S - "$@" << "PY_NODE_CACHE"
+import hashlib, json, os, pathlib, subprocess, sys, tarfile, time
+root, work, local = map(pathlib.Path, sys.argv[1:])
+meta = json.loads((work / "cache/python-bytecode-ready.json").read_text())
+head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], universal_newlines=True).strip()
+env = (work / "envs/verl").resolve()
+cluster = os.environ.get("SLURM_CLUSTER_NAME", "")
+if not cluster or meta.get("cluster") != cluster or meta.get("git_head") != head or meta.get("python_env") != str(env):
+    print(json.dumps({"node": os.uname().nodename, "cache_seed": "skipped", "reason": "cluster, environment or checkout differs"}), flush=True)
+    sys.exit(0)
+archive = pathlib.Path(meta["archive"]).resolve()
+if os.path.commonpath([str(archive), str((work / "cache").resolve())]) != str((work / "cache").resolve()):
+    raise RuntimeError("Bytecode archive must be in this work directory cache")
+started = time.monotonic()
+digest = hashlib.sha256()
+with archive.open("rb") as stream:
+    for data in iter(lambda: stream.read(8 * 1024**2), b""):
+        digest.update(data)
+if digest.hexdigest() != meta["sha256"]:
+    raise RuntimeError("Bytecode archive checksum mismatch")
+target = local / "python-bytecode"
+target.mkdir(parents=True, exist_ok=True)
+with tarfile.open(str(archive), "r:gz") as bundle:
+    members = bundle.getmembers()
+    for member in members:
+        name = pathlib.PurePosixPath(member.name)
+        if name.is_absolute() or ".." in name.parts or not (member.isfile() or member.isdir()) or (member.isfile() and not member.name.endswith(".pyc")):
+            raise RuntimeError("Invalid bytecode archive member")
+    bundle.extractall(str(target), members=members)
+native_bytes = 0
+native_count = 0
+buffer = bytearray(8 * 1024**2)
+for name in meta.get("native_libraries", []):
+    if not os.path.isabs(name):
+        raise RuntimeError("Native warm-up path must be absolute")
+    library = pathlib.Path(os.path.normpath(name))
+    if os.path.commonpath([str(library), str(env)]) != str(env):
+        raise RuntimeError("Native warm-up path is outside this environment")
+    try:
+        stream = library.open("rb")
+    except FileNotFoundError:
+        continue
+    with stream:
+        while True:
+            count = stream.readinto(buffer)
+            if not count:
+                break
+            native_bytes += count
+    native_count += 1
+print(json.dumps({"node": os.uname().nodename, "cache_seed": "loaded", "archive_sha256": digest.hexdigest(), "native_libraries": native_count, "native_bytes": native_bytes, "seconds": time.monotonic() - started}), flush=True)
+PY_NODE_CACHE' pear-node-cache "$ROOT" "$WORK_DIR" "$LOCAL_DIR" \
+    > "$RUN/python-cache-stage-$SLURM_JOB_ID.log" 2>&1
+fi
 mapfile -t NODES < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
 HEAD=${NODES[0]}
 WORKER=${NODES[TRAINER_NNODES]}

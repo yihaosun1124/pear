@@ -265,6 +265,57 @@ cubin 的 Lustre 查询会拖慢每个进程。GPU 环境脚本默认启用 `PEA
 设为 `0` 可做原函数对照。在同一 Tamia 环境的 290 个 distribution 上，两种方法得到完全相同的
 279 项顶层包映射，分别耗时 2.23 秒和 33.64 秒；Fir 的文件查询延迟更高，实际启动仍由 smoke 验证。
 
+本地目录为 XFS、ext 或其他支持的磁盘文件系统时，GPU 环境脚本将 `PYTHONPYCACHEPREFIX`
+设到 `$LOCAL_DIR/python-bytecode`，允许在该节点磁盘上生成 bytecode，供同一节点后续进程复用。
+共享文件系统仍禁止新 bytecode 写入；不把编译缓存或环境复制到其他集群。
+
+在 CPU 计算作业内完成全部检查后，可保存这个节点已经生成的 bytecode，供该集群 GPU 作业使用。
+下面的发布命令必须放在成功的 pytest 命令之后，并由 `set -e` 保证失败时不执行。
+它只保存 Python bytecode；原生库仍保留在原环境，GPU 启动时顺序预读以减少随机缺页 I/O。
+Fir 实测顺序读取 67 个已映射原生库、共 3.65 GB 用时 8.53 秒，代码和环境内容均未改变。
+
+```bash
+python - <<'PY'
+import csv, hashlib, json, os, pathlib, subprocess, sys, tarfile, time
+work = pathlib.Path(os.environ["WORK_DIR"])
+prefix = pathlib.Path(sys.pycache_prefix)
+assert prefix.is_relative_to(pathlib.Path(os.environ["LOCAL_DIR"]))
+cache = work / "cache"
+cache.mkdir(exist_ok=True)
+temporary = cache / (".python-bytecode-" + os.environ["SLURM_JOB_ID"] + ".tar.gz.partial")
+def bytecode_only(member):
+    return member if member.isdir() or (member.isfile() and member.name.endswith(".pyc")) else None
+with tarfile.open(temporary, "w:gz") as bundle:
+    bundle.add(prefix, arcname=".", filter=bytecode_only)
+digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
+archive = cache / ("python-bytecode-" + digest + ".tar.gz")
+os.replace(temporary, archive)
+env = pathlib.Path(sys.prefix).resolve()
+site = env / "lib/python3.12/site-packages"
+native = set()
+for record in site.glob("*.dist-info/RECORD"):
+    for row in csv.reader(record.read_text().splitlines()):
+        if row and ".so" in pathlib.PurePosixPath(row[0]).name:
+            library = (site / row[0]).resolve()
+            if library.is_relative_to(env):
+                native.add(str(library))
+ready = {
+    "cluster": os.environ["SLURM_CLUSTER_NAME"],
+    "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+    "python_env": str(env), "archive": str(archive), "sha256": digest,
+    "native_libraries": sorted(native), "created_at": time.time(),
+}
+pointer = cache / "python-bytecode-ready.json"
+temporary = pointer.with_suffix(".json.partial")
+temporary.write_text(json.dumps(ready, indent=2) + "\n")
+os.replace(temporary, pointer)
+PY
+```
+
+启动脚本只接受相同 Slurm 集群、环境路径和仓库 commit 的 seed，核对 SHA256 后在每个 GPU 节点
+提取到该作业的节点磁盘，再预读环境中的原生库；源文件仍由 Python 正常校验。缺少 seed 或版本不符时
+沿用普通启动，不复制 venv，不跨集群复用此缓存，不改变模型、算子、训练参数或 checkpoint 格式。
+
 验证作业应为 TERM/INT 设置非零退出，并以 `sacct` 的最终状态核对结果。
 旧作业 `4838738` 的 EXIT trap 曾在 Slurm TIMEOUT 后写出 `exit_code=0`，原收据保留，
 它不能证明这些检查已完成。
@@ -515,12 +566,13 @@ Ray token 文件权限仅限当前用户，不要提交到代码仓库或分享�
 | FlashInfer JIT 报 `cannot find -lcuda` | pip CUDA toolkit 缺 driver 链接 stub。按 2.3 节补齐，仅加 LIBRARY_PATH；执行用真实 libcuda.so.1。 |
 | actor 已初始化、rollout 也完成，却在 backward 失败 | FLA backward 延迟导入 TileLang，默认缓存写只读 home。`TILELANG_CACHE_DIR` 和 `TILELANG_TMP_DIR` 必须指向每节点 LOCAL_DIR；仅检查 import 或模型加载不够。 |
 | 多进程共享编译缓存冲突 / 临时目录残留 | JIT、CUDA、Ray 的临时目录按 job id 隔离；退出前归档 Ray 日志、停止 Ray、清理该作业的确切目录。不要假定 /tmp 是独立 SSD；若站点使用 tmpfs，临时文件也计入主存预算。 |
-| CPU 检查很慢并输出 `Timeout (0:05:00)!` 栈 | pytest 的 300 秒 faulthandler 只打印诊断栈，不会终止测试。Fir 实测栈停在 importlib 的 `.pyc` 写入与目录查询，进程等待 Lustre RPC 且读写量继续增长。后续进程设置 `PYTHONDONTWRITEBYTECODE=1`，仍可读取已有 bytecode；先查真实进程、退出码和最终测试结果，不要把这条诊断当失败后重启安装。 |
+| CPU 检查很慢并输出 `Timeout (0:05:00)!` 栈 | pytest 的 300 秒 faulthandler 只打印诊断栈，不会终止测试。Fir 实测栈停在 importlib 的 `.pyc` 写入与目录查询，进程等待 Lustre RPC 且读写量继续增长。共享文件系统禁止新 bytecode 写入；有节点磁盘时使用本地 `PYTHONPYCACHEPREFIX`。先查真实进程、退出码和最终测试结果，不要把这条诊断当失败后重启安装。 |
 | 禁用 `.pyc` 写入后仍长时间停在 collecting | 查看调用栈是否在 `packages_distributions → Distribution.files → Path.exists` 遍历头文件。第 2.4 节的元数据 hook 合并同一顶层包的重复查询；依赖识别与原函数对照一致，不修改包版本或关闭训练模块。保留当前活跃验证，新启动进程经 GPU 环境脚本使用修复。 |
 | NVIDIA worker 报 `Please don't set ROCR_VISIBLE_DEVICES when HIP/CUDA_VISIBLE_DEVICES is set` | Rorqual 的 GPU 预检已通过，但 Ray worker 收到了同时存在的 CUDA / ROCR 设备变量。NVIDIA 运行环境在每个 Slurm step 内加载 `gpu_process_variables.sh` 时清除 `ROCR_VISIBLE_DEVICES` 和 `HIP_VISIBLE_DEVICES`，保留 CUDA 分配；不修改 GPU 数量或训练参数。 |
 | 登录节点安装 GPU 依赖被 `Killed`，退出 137 | Tamia 在完成大包下载后安装阶段被 SIGKILL；日志本身不能证明具体 OOM 原因。保留模型、venv 和已完成的 uv 缓存，在有明确 CPU / 内存配额的计算作业中修复安装；可能写到一半的包强制重装，不从零清空环境。 |
 | 更新 actor 时 `split_with_sizes` 报序列长度 5140、分片长度却都是 4 | 等长 mRoPE 位置张量可能沿通道轴打包。只修改 `_ragged_idx` 会让存储和 offsets 指向不同轴。补丁 0054 使用公开的 `jagged_dim` 构造参数，并在修复序列化元数据时按真实打包轴重建 token 布局。六项 CPU 回归覆盖等长、变长、重复索引及 TensorDict 序列化；该站真实 RL 更新仍需 smoke 验证。 |
 | 结果 JSON 为 0，但 CPU 验证日志只有部分测试 | 核对 `sacct`：TIMEOUT/CANCELLED 优先于旧 EXIT trap 的结果文件。依赖完整时可按 2.4 节合并验证，记录逐测试进度并正确处理 TERM；不要据此放行 GPU 训练。 |
+| LMCache 的两个 0.5 秒超时单测找不到 record，或缺少本次 partial-progress 行 | 慢文件系统上的模拟 Python 尚未启动，测试已经耗尽 pinning 的短时限。超时测试 fixture 等待本次模拟进程输出首条 partial-progress 行后，才调用原生产 pinning 等待函数；0.5 秒断言、杀进程和旧日志隔离断言都保留。生产的 1800 秒 pinning 时限、NUMA 检查和 64 GiB 缓存设置不变。 |
 | smoke 一直生成却不训练 | 官方 group filter 会丢弃全部奖励相同的组。minimal smoke 关闭它，使零奖励批次也能完成真实更新流程；正式训练保留官方设置。 |
 | `lr_scheduler.step()` 的顺序 warning | streamed AdamW 直接调用底层更新函数，PyTorch 的外层计数可能未识别。不能只凭 warning 判定没有更新；此次独立读取四个 rank 的 optimizer counter，均为 1。 |
 | 磁盘用量突然增长 | smoke checkpoint 实测约 306 GiB/step。FSDP2 HSDP 去重复制维度，不能简单按 rank 数倍增；正式的 TransferQueue 快照等额外开销仍需实测。官方每步保存、保留两份，加独立 smoke 约需 918 GiB，另留余量。 |
