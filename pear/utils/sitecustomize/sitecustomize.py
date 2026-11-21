@@ -25,3 +25,8 @@ class FDTable:
 
 
 FDTable.presize()
+
+if os.environ.get("PEAR_FAST_PACKAGE_METADATA", "0") == "1":
+    from pear_package_metadata import install
+
+    install()

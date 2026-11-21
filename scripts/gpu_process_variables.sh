@@ -15,6 +15,15 @@ export PYTHONDONTWRITEBYTECODE=1
 # This CUDA runtime uses NVIDIA GPUs; verl rejects ROCR together with CUDA/HIP visibility.
 unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
 
+# Transformers asks for a package-to-distribution map during import. Python 3.12
+# otherwise stats every installed header/cubin on Lustre in every Ray worker.
+PEAR_STARTUP_PATH=$(cd "$(dirname "${BASH_SOURCE[0]}")/../pear/utils/sitecustomize" && pwd -P)
+case ":${PYTHONPATH:-}:" in
+  *":$PEAR_STARTUP_PATH:"*) ;;
+  *) export PYTHONPATH=$PEAR_STARTUP_PATH${PYTHONPATH:+:$PYTHONPATH} ;;
+esac
+export PEAR_FAST_PACKAGE_METADATA=${PEAR_FAST_PACKAGE_METADATA:-1}
+
 # the CUDA toolkit lives in the environment install.sh built, among the packages of its Python, which names their
 # directory; numactl and numastat, for the LMCache sidecars, where the target numactl installed them
 CUDA_HOME=$("$PYTHON_ENV/bin/python" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")/nvidia/cu13

@@ -244,7 +244,7 @@ bash scripts/install.sh verl
 
 若依赖安装已完成、CPU 作业在最终验证阶段达到时限，可直接验证现有环境。
 Fir 的一次 1 小时 CPU 作业在共享文件查询中超时；重提验证时使用 8 CPU、64G、3 小时，
-把以下 17 项环境检查、18 项 LMCache 检查及 6 项位置张量回归放进同一 Python 进程，
+把以下 17 项环境检查、18 项 LMCache 检查、6 项位置张量回归和 6 项依赖元数据回归放进同一 Python 进程，
 减少重复冷导入。正式 64 卡训练仍申请 2 小时。临时缓存放在计算节点本地：
 
 ```bash
@@ -252,8 +252,18 @@ export LOCAL_DIR=${SLURM_TMPDIR:-/tmp/$USER}/pear-cpu-$SLURM_JOB_ID
 mkdir -p "$LOCAL_DIR"
 source scripts/gpu_process_variables.sh "$WORK_DIR/envs/verl"
 python -m pytest -vv --durations=20 tests/test_training_environment_on_cpu.py \
-  tests/rollout/test_lmcache_on_cpu.py tests/test_verl_position_ids_on_cpu.py
+  tests/rollout/test_lmcache_on_cpu.py tests/test_verl_position_ids_on_cpu.py \
+  tests/test_package_metadata_on_cpu.py
 ```
+
+Fir 的调用栈还定位到 Transformers 导入时的 `importlib.metadata.packages_distributions()`：
+Python 3.12 在推断顶层包名之前，会查询 RECORD 中每个文件是否存在，数万份 PyTorch 头文件和
+cubin 的 Lustre 查询会拖慢每个进程。GPU 环境脚本默认启用 `PEAR_FAST_PACKAGE_METADATA=1`，
+由启动 hook 对每个候选包名查到一个现存文件就停止该包的重复查询；首个文件缺失时继续寻找，
+整个包缺失时仍不返回它。声明的顶层包名、namespace 分发顺序和旧式 metadata 保留原语义，
+不修改已安装 wheel 或 RECORD，不跳过版本检查；其他 Python 版本沿用原函数。
+设为 `0` 可做原函数对照。在同一 Tamia 环境的 290 个 distribution 上，两种方法得到完全相同的
+279 项顶层包映射，分别耗时 2.23 秒和 33.64 秒；Fir 的文件查询延迟更高，实际启动仍由 smoke 验证。
 
 验证作业应为 TERM/INT 设置非零退出，并以 `sacct` 的最终状态核对结果。
 旧作业 `4838738` 的 EXIT trap 曾在 Slurm TIMEOUT 后写出 `exit_code=0`，原收据保留，
@@ -506,6 +516,7 @@ Ray token 文件权限仅限当前用户，不要提交到代码仓库或分享�
 | actor 已初始化、rollout 也完成，却在 backward 失败 | FLA backward 延迟导入 TileLang，默认缓存写只读 home。`TILELANG_CACHE_DIR` 和 `TILELANG_TMP_DIR` 必须指向每节点 LOCAL_DIR；仅检查 import 或模型加载不够。 |
 | 多进程共享编译缓存冲突 / 临时目录残留 | JIT、CUDA、Ray 的临时目录按 job id 隔离；退出前归档 Ray 日志、停止 Ray、清理该作业的确切目录。不要假定 /tmp 是独立 SSD；若站点使用 tmpfs，临时文件也计入主存预算。 |
 | CPU 检查很慢并输出 `Timeout (0:05:00)!` 栈 | pytest 的 300 秒 faulthandler 只打印诊断栈，不会终止测试。Fir 实测栈停在 importlib 的 `.pyc` 写入与目录查询，进程等待 Lustre RPC 且读写量继续增长。后续进程设置 `PYTHONDONTWRITEBYTECODE=1`，仍可读取已有 bytecode；先查真实进程、退出码和最终测试结果，不要把这条诊断当失败后重启安装。 |
+| 禁用 `.pyc` 写入后仍长时间停在 collecting | 查看调用栈是否在 `packages_distributions → Distribution.files → Path.exists` 遍历头文件。第 2.4 节的元数据 hook 合并同一顶层包的重复查询；依赖识别与原函数对照一致，不修改包版本或关闭训练模块。保留当前活跃验证，新启动进程经 GPU 环境脚本使用修复。 |
 | NVIDIA worker 报 `Please don't set ROCR_VISIBLE_DEVICES when HIP/CUDA_VISIBLE_DEVICES is set` | Rorqual 的 GPU 预检已通过，但 Ray worker 收到了同时存在的 CUDA / ROCR 设备变量。NVIDIA 运行环境在每个 Slurm step 内加载 `gpu_process_variables.sh` 时清除 `ROCR_VISIBLE_DEVICES` 和 `HIP_VISIBLE_DEVICES`，保留 CUDA 分配；不修改 GPU 数量或训练参数。 |
 | 登录节点安装 GPU 依赖被 `Killed`，退出 137 | Tamia 在完成大包下载后安装阶段被 SIGKILL；日志本身不能证明具体 OOM 原因。保留模型、venv 和已完成的 uv 缓存，在有明确 CPU / 内存配额的计算作业中修复安装；可能写到一半的包强制重装，不从零清空环境。 |
 | 更新 actor 时 `split_with_sizes` 报序列长度 5140、分片长度却都是 4 | 等长 mRoPE 位置张量可能沿通道轴打包。只修改 `_ragged_idx` 会让存储和 offsets 指向不同轴。补丁 0054 使用公开的 `jagged_dim` 构造参数，并在修复序列化元数据时按真实打包轴重建 token 布局。六项 CPU 回归覆盖等长、变长、重复索引及 TensorDict 序列化；该站真实 RL 更新仍需 smoke 验证。 |
