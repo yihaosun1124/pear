@@ -26,6 +26,13 @@ class FDTable:
 
 FDTable.presize()
 
+if os.environ.get("LOCAL_DIR") and os.path.isfile(
+    os.path.join(os.environ["LOCAL_DIR"], "python-packages", ".ready.json")
+):
+    from pear_source_cache import activate
+
+    activate()
+
 if os.environ.get("PEAR_FAST_PACKAGE_METADATA", "0") == "1":
     from pear_package_metadata import install
 

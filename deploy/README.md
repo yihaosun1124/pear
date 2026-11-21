@@ -325,6 +325,30 @@ PY
 提取到该作业的节点磁盘，再预读环境中的原生库；源文件仍由 Python 正常校验。缺少 seed 或版本不符时
 沿用普通启动，不复制 venv，不跨集群复用此缓存，不改变模型、算子、训练参数或 checkpoint 格式。
 
+Fir 的后续 smoke `4903543` 在 30 分钟预算内只完成了 FlashInfer 和训练反向算子预检，
+没有进入 RL；其中反向算子检查耗时 1261 秒。有效 bytecode 仍不能避免 Transformers 为
+lazy import 索引递归打开源码。可在 CPU 计算作业内为该环境建立**相同内容的源码快照**，
+供每个计算节点在自己的磁盘读取；不修改已安装包，不复制环境或 GPU JIT 缓存。
+
+```bash
+SOURCE_CACHE=pear/utils/sitecustomize/pear_source_cache.py
+python "$SOURCE_CACHE" build "$ROOT" "$WORK_DIR"
+/usr/bin/python3 -B -S "$SOURCE_CACHE" stage-candidate "$ROOT" "$WORK_DIR" "$LOCAL_DIR"
+# 新进程的 startup hook 此时会选择本地 Transformers；检查全部依赖及启动回归。
+python -m pytest tests/test_training_environment_on_cpu.py tests/rollout/test_lmcache_on_cpu.py \
+  tests/test_verl_position_ids_on_cpu.py tests/test_package_metadata_on_cpu.py \
+  tests/test_gpu_process_variables_on_cpu.py tests/test_source_cache_on_cpu.py
+# 仅在检查成功后发布；外层脚本必须 set -e。
+mv "$WORK_DIR/cache/transformers-source-candidate.json" "$WORK_DIR/cache/transformers-source-ready.json"
+# 运行时 startup hook 已变化，随后重新生成上文的 bytecode seed，不能只修改旧 seed 的 commit。
+```
+
+快照逐文件保存 SHA256，包含源码和包资源，排除 bytecode。GPU 启动时要求相同集群、
+环境路径和 commit，检查安装包 RECORD、归档及提取文件的哈希，拒绝越界路径或链接，
+然后原子发布本地目录。startup hook 只对匹配的 Python 环境和 cache tag 启用它；
+LIBERO 的另一环境、缺失或不匹配快照均沿用原包，distribution metadata 仍来自原环境。
+首次 cold JIT 的 smoke 可申请 1 小时；正式任务仍固定 2 小时，所有 GPU 预检保留。
+
 验证作业应为 TERM/INT 设置非零退出，并以 `sacct` 的最终状态核对结果。
 旧作业 `4838738` 的 EXIT trap 曾在 Slurm TIMEOUT 后写出 `exit_code=0`，原收据保留，
 它不能证明这些检查已完成。

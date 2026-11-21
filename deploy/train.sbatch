@@ -225,6 +225,11 @@ print(json.dumps({"node": os.uname().nodename, "cache_seed": "loaded", "archive_
 PY_NODE_CACHE' pear-node-cache "$ROOT" "$WORK_DIR" "$LOCAL_DIR" \
     > "$RUN/python-cache-stage-$SLURM_JOB_ID.log" 2>&1
 fi
+if [ -f "$WORK_DIR/cache/transformers-source-ready.json" ]; then
+  srun --nodes="$TOTAL_NODES" --ntasks="$TOTAL_NODES" --ntasks-per-node=1 --cpus-per-task=1 \
+    /usr/bin/python3 -B -S pear/utils/sitecustomize/pear_source_cache.py stage "$ROOT" "$WORK_DIR" "$LOCAL_DIR" \
+    > "$RUN/python-source-stage-$SLURM_JOB_ID.log" 2>&1
+fi
 mapfile -t NODES < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
 HEAD=${NODES[0]}
 WORKER=${NODES[TRAINER_NNODES]}
