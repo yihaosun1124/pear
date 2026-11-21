@@ -30,10 +30,9 @@ trainer:
   val_before_train: false
   val_only: false
   test_freq: -1  # no validation: a pass costs the rollout pool too much
-  # a machine can be taken away: a checkpoint every step; two kept: a backup of the latest one must not see it pruned
-  # by the next save
+  # Save every step and retain only the latest checkpoint, as requested for this deployment.
   save_freq: 1
-  max_actor_ckpt_to_keep: 2
+  max_actor_ckpt_to_keep: 1
   v1:
     separate_async:
       num_warmup_batches: 0

@@ -133,6 +133,7 @@ export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1
 EXTRA_ARGS=(
   trainer.n_gpus_per_node=4
   actor_rollout_ref.rollout.n_gpus_per_node=4
+  trainer.max_actor_ckpt_to_keep=1
 )
 if [ "$MODE" = smoke ]; then
   cat > "$RUN/episodes.json" <<'JSON'
@@ -151,7 +152,7 @@ JSON
     actor_rollout_ref.rollout.standalone_gpu_memory_utilization=0.8
     actor_rollout_ref.rollout.enforce_eager=true
     transfer_queue.backend.SimpleStorage.num_data_storage_units=2
-    algorithm.filter_groups.enable=false trainer.resume_mode=disable trainer.max_actor_ckpt_to_keep=1
+    algorithm.filter_groups.enable=false trainer.resume_mode=disable
   )
 else
   EXTRA_ARGS+=(actor_rollout_ref.rollout.custom.lmcache.l1_size_gb="$LMCACHE_GB")

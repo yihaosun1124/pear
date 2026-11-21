@@ -372,7 +372,7 @@ Slurm 选项放在脚本路径之前，训练参数放在之后。其他 Hydra �
 
 ```bash
 sbatch --account="$ACCOUNT" --partition="$TRAIN_PARTITION" deploy/train.sbatch \
-  RUN="$WORK_DIR/runs/stage1" -- trainer.save_freq=5
+  RUN="$WORK_DIR/runs/stage1" -- trainer.max_actor_ckpt_to_keep=1
 ```
 
 默认每节点 96 CPU、4 GPU，申请 **450G（450 GiB）** 内存；硬限制取决于站点是否支持该请求。
@@ -411,11 +411,12 @@ CPU 数和每节点内存需要按目标集群调整。
 | Ray object store / 每节点 | 8 GiB | 64 GiB，沿用官方启动器 |
 | TransferQueue storage units | 2 | 32，沿用官方 |
 | 无奖励差异的 group filter | 关闭 | 开启，沿用官方 |
-| checkpoint / 恢复 | 每步、保留 1、禁止恢复 | 每步、保留 2、同一 RUN 自动恢复 |
+| checkpoint / 恢复 | 每步、保留 1、禁止恢复 | 每步、保留 1、同一 RUN 自动恢复 |
 
-正式脚本只调整资源拓扑为每节点 4 卡、4 个 trainer 节点和 12 个 rollout 节点；
+正式脚本使用每节点 4 卡、4 个 trainer 节点和 12 个 rollout 节点。
 训练与 rollout 默认值沿用固定版本的官方 Stage 1 / H100 recipe，包括 batch、N、响应预算、MTP、
-group filter、logger、checkpoint 保留策略。默认将 LMCache 主存缓存从 700 GiB 减至 64 GiB；
+group filter 和 logger；checkpoint 按用户要求改为每步保存、只保留最新一份。
+LMCache 主存缓存从 700 GiB 减至 64 GiB；
 Rorqual 还使用用户批准的 NUMA 预留 32 GiB，其他站点默认仍为官方的 100 GiB。
 这是系统缓存容量调整，不改变 GRPO、训练数据或训练目标；可能增加缓存淘汰、搬运和重算。
 每节点 Ray CPU slots 按 Slurm 的 CPU 分配扣除系统余量。
@@ -477,8 +478,9 @@ Trillium 原始 smoke 使用整节点内存；下述 Rorqual smoke 已在 450G �
 也不能用 world-size-4 的 smoke checkpoint 恢复正式训练。
 恢复前核对实际 mesh 的分片拥有者、所有 rank 的 extra_state、训练 step 和完整 TransferQueue 快照。
 
-存储也要预留：按 smoke 实测约 306 GiB/份估算，独立 smoke 加正式保留的两份 checkpoint
-约需 918 GiB，另留 TransferQueue、日志和安装缓存余量；正式大小仍需实测。
+按用户要求，每步仍保存 checkpoint，每个 RUN 只保留最新一份；这项保留策略覆盖官方的两份默认值。
+存储按普通完整文件预留：smoke 实测约 306 GiB/份，独立 smoke 加一份正式 checkpoint
+的核心文件合计约 612 GiB，另留 TransferQueue、日志和安装缓存余量；正式大小仍需实测。
 其中模型主参数以 FP32 保存，约 102 GiB；AdamW 的一阶、二阶动量也以 FP32 保存，合计约
 204 GiB。即使只训练一步，保存的也是完整状态。分片总量已包含所有写文件的 rank，不能再乘卡数。
 
@@ -488,10 +490,8 @@ TransferQueue 快照还包含多模态 `pixel_values`、token、位置编码和 
 40.1 GiB/份；这是场景估算，实际大小取决于完成的轨迹长度、图像数及队列中保存的样本数。
 不能从短 smoke 的队列大小推断正式长轨迹的额外空间。
 
-零梯度 smoke 的优化器可能包含大量连续零区。静止、完整的 checkpoint 可以通过内容等价的
-稀疏副本节省实际占盘，但必须先核对完整 SHA256、逻辑大小、权限、mtime 和正常恢复读取，再原子
-替换原件；不得处理仍在写入的文件。一次真实验证将 306 GiB 逻辑大小的 smoke 核心文件实际占盘
-降至约 118 GiB，完整内容不变。正式训练的动量可能更密集，空间预算不能沿用该节省比例。
+不使用稀疏存储，也不把零梯度带来的空间节省计入预算。已有 checkpoint 若曾做过文件系统稀疏整理，
+恢复为普通完整文件时须保留逐字节内容、完整 SHA256、权限、mtime 和优化器状态，并在验证后原子替换。
 重新核算时，已有 smoke 已计入 quota.used，不要再次从 quota.free 扣除；同时确认配额用量已完成结算。
 
 节点临时目录也要区分内存盘和磁盘。启动器优先使用磁盘上的 `SLURM_TMPDIR`，否则使用
@@ -584,7 +584,7 @@ Ray token 文件权限仅限当前用户，不要提交到代码仓库或分享�
 | LMCache 的两个 0.5 秒超时单测找不到 record，或缺少本次 partial-progress 行 | 慢文件系统上的模拟 Python 尚未启动，测试已经耗尽 pinning 的短时限。超时测试 fixture 等待本次模拟进程输出首条 partial-progress 行后，才调用原生产 pinning 等待函数；0.5 秒断言、杀进程和旧日志隔离断言都保留。生产的 1800 秒 pinning 时限、NUMA 检查和 64 GiB 缓存设置不变。 |
 | smoke 一直生成却不训练 | 官方 group filter 会丢弃全部奖励相同的组。minimal smoke 关闭它，使零奖励批次也能完成真实更新流程；正式训练保留官方设置。 |
 | `lr_scheduler.step()` 的顺序 warning | streamed AdamW 直接调用底层更新函数，PyTorch 的外层计数可能未识别。不能只凭 warning 判定没有更新；此次独立读取四个 rank 的 optimizer counter，均为 1。 |
-| 磁盘用量突然增长 | smoke checkpoint 实测约 306 GiB/step。FSDP2 HSDP 去重复制维度，不能简单按 rank 数倍增；正式的 TransferQueue 快照等额外开销仍需实测。官方每步保存、保留两份，加独立 smoke 约需 918 GiB，另留余量。 |
+| 磁盘用量突然增长 | 普通 smoke checkpoint 实测约 306 GiB/step。FSDP2 HSDP 去重复制维度，不能简单按 rank 数倍增；每个 RUN 按用户要求保留最新一份，加独立 smoke 的核心文件约需 612 GiB，TransferQueue 快照等另算。不使用稀疏存储。 |
 
 GPU 环境检查应在已分配的 H100 上执行：加载 `scripts/gpu_process_variables.sh` 后运行
 `python -m pytest tests/test_training_environment_on_gpu.py`。本次为 3/3 通过；
