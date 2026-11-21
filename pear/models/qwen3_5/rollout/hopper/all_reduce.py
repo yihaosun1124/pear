@@ -1,20 +1,24 @@
+import logging
 import os
 import random
 
 import flashinfer.comm as fi_comm
 import torch
-from flashinfer.comm.mnnvl import TorchDistBackend
+from flashinfer.comm.mnnvl import TorchDistBackend, all_ranks_support_mnnvl, is_multicast_supported
 from torch.library import Library
 from vllm.distributed import get_tp_group, tensor_model_parallel_all_reduce
 from vllm.utils.torch_utils import direct_register_custom_op
 
 from pear.models.qwen3_5.rollout.hopper.cudagraph import HopperMixedStepGraphs
 
+logger = logging.getLogger(__name__)
+
 
 class AllReduceNorm:
     """A Hopper decoder layer's all-reduce of a row-parallel output, add into the fp32 residual stream and RMSNorm, as
     the op torch.ops.pear_rollout_hopper.ar_add_rmsnorm: up to the largest mixed-step graph's rows two kernels on an
-    MNNVL workspace of their own (csrc/ar_norm.cu), above them vLLM's all-reduce and an add + RMSNorm kernel."""
+    MNNVL workspace of their own (csrc/ar_norm.cu). Larger batches, and GPUs without multicast, use vLLM's all-reduce
+    and an add + RMSNorm kernel."""
 
     # The residual stream is fp32 through every layer of every step, as the trainer's (Fp32ResidualStream): a norm adds
     # the bf16 all-reduce of the preceding row-parallel output into it. The op picks its kernels in Python at every call
@@ -27,6 +31,7 @@ class AllReduceNorm:
     library = None  # the op's registration, held for the process
     workspace = None  # the MNNVL workspace of the pair's kernels, of the largest mixed-step graph's rows
     flags = None
+    multicast_unavailable = False
 
     @classmethod
     def register_op(cls) -> None:
@@ -43,7 +48,7 @@ class AllReduceNorm:
     @classmethod
     def create_workspace(cls, model) -> None:
         """Every rank, after the load (collectives): the MNNVL workspace of the pair's kernels."""
-        if cls.workspace is not None:
+        if cls.workspace is not None or cls.multicast_unavailable:
             return
 
         group = get_tp_group()
@@ -56,6 +61,18 @@ class AllReduceNorm:
                 f"not {hidden_size}"
             )
 
+        comm_backend = TorchDistBackend(group=group.cpu_group)
+        if not all_ranks_support_mnnvl(
+            is_multicast_supported(torch.cuda.current_device()),
+            group.world_size,
+            comm_backend=comm_backend,
+            group=group.cpu_group,
+        ):
+            cls.multicast_unavailable = True
+            if group.rank_in_group == 0:
+                logger.warning("NVLink multicast is unavailable; using vLLM all-reduce with the fp32 residual RMSNorm")
+            return
+
         state = random.getstate()  # FlashInfer seeds Python's RNG: keep the process's stream, as vLLM does
 
         try:
@@ -67,7 +84,7 @@ class AllReduceNorm:
                 max_token_num=HopperMixedStepGraphs.MAX_TOKENS,
                 hidden_dim=hidden_size,
                 dtype=torch.bfloat16,
-                comm_backend=TorchDistBackend(group=group.cpu_group),
+                comm_backend=comm_backend,
                 group=group.cpu_group,
             )
         finally:
@@ -91,7 +108,7 @@ class AllReduceNorm:
     @staticmethod
     def ar_add_rmsnorm(x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor, eps: float) -> None:
         """residual <- residual + all-reduce(x) in fp32, x <- RMSNorm(residual) * (1 + weight)."""
-        if x.shape[0] <= HopperMixedStepGraphs.MAX_TOKENS:
+        if AllReduceNorm.workspace is not None and x.shape[0] <= HopperMixedStepGraphs.MAX_TOKENS:
             # the normed rows into x, as FlashInfer writes them
             workspace = AllReduceNorm.workspace
             torch.ops.pear_rollout_hopper.ar_norm(
@@ -108,7 +125,8 @@ class AllReduceNorm:
                 AllReduceNorm.NORM_BIAS,
             )
         else:
-            reduced = tensor_model_parallel_all_reduce(x)
+            # NCCL may round intermediate bf16 sums. Match the fused path's one rounding after an fp32 sum.
+            reduced = tensor_model_parallel_all_reduce(x.float()).to(x.dtype)
             torch.ops.pear_rollout_hopper.add_rmsnorm(reduced, residual, weight, x, eps, AllReduceNorm.NORM_BIAS)
 
     @staticmethod

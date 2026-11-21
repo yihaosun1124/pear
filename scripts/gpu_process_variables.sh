@@ -12,12 +12,24 @@ PYTHON_ENV=${1:?the Python environment of the processes, one that scripts/instal
 CUDA_HOME=$("$PYTHON_ENV/bin/python" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")/nvidia/cu13
 export CUDA_HOME
 export PATH=$PYTHON_ENV/bin:$CUDA_HOME/bin:$WORK_DIR/envs/numactl/bin:$WORK_DIR/bin:$PATH
+# Trillium's system C++ runtime predates the GCC used to build the native extensions.
+if [ -d "$WORK_DIR/runtime/lib" ]; then
+  export LD_LIBRARY_PATH=$WORK_DIR/runtime/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+fi
+# Some pip CUDA toolkits omit the driver link stub required by FlashInfer's JIT.
+# It is a link-time search path only; the node's actual libcuda.so.1 handles execution.
+if [ -d "$WORK_DIR/runtime/cuda-driver-stubs" ]; then
+  export LIBRARY_PATH=$WORK_DIR/runtime/cuda-driver-stubs${LIBRARY_PATH:+:$LIBRARY_PATH}
+fi
 
 # JIT caches stay on the machine: Triton, Inductor and vLLM's compiled graphs reference each other by absolute path,
 # and many processes compiling one kernel into a shared directory race; a machine compiles once and keeps the result
 export VLLM_CACHE_ROOT=${VLLM_CACHE_ROOT:-$LOCAL_DIR/vllm}
 export TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-$LOCAL_DIR/inductor}
 export TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-$LOCAL_DIR/triton}
+# FLA's backward kernels lazily import TileLang, whose default cache is in the home directory.
+export TILELANG_CACHE_DIR=${TILELANG_CACHE_DIR:-$LOCAL_DIR/tilelang}
+export TILELANG_TMP_DIR=${TILELANG_TMP_DIR:-$LOCAL_DIR/tilelang/tmp}
 # the builds of torch's cpp_extension (the Qwen3.5 kernels)
 export TORCH_EXTENSIONS_DIR=${TORCH_EXTENSIONS_DIR:-$LOCAL_DIR/torch_extensions}
 # the NVIDIA driver's cache of the kernels it compiles when a process loads them, under the home directory by default

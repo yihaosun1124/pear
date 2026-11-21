@@ -103,7 +103,10 @@ checkout_flash_attention() {
   if [ ! -d "$FLASH_ATTENTION_SRC/.git" ]; then
     git clone -q "$FLASH_ATTN_URL" "$FLASH_ATTENTION_SRC"
   fi
-  git -C "$FLASH_ATTENTION_SRC" fetch -q origin "$FLASH_ATTN_COMMIT"
+  if [ "${UV_OFFLINE:-0}" != 1 ]; then
+    git -C "$FLASH_ATTENTION_SRC" fetch -q origin "$FLASH_ATTN_COMMIT"
+  fi
+  git -C "$FLASH_ATTENTION_SRC" cat-file -e "$FLASH_ATTN_COMMIT^{commit}"
   git -C "$FLASH_ATTENTION_SRC" checkout -q "$FLASH_ATTN_COMMIT"
   git -C "$FLASH_ATTENTION_SRC" submodule update -q --init --depth 1 csrc/cutlass
 }
@@ -138,6 +141,7 @@ install_cuda_toolkit() {
 # for CUDA_ARCH from the flash-attention checkout, in the environment itself (no isolation).
 install_flash_attn_2() {
   local inputs
+  local refresh_args=()
 
   inputs=$(cat <(grep '^torch==' "$UV_CONSTRAINT") <(echo "$FLASH_ATTN_COMMIT $CUDA_ARCH $VERL_PYTHON_VERSION") |
     inputs_hash)
@@ -146,6 +150,9 @@ install_flash_attn_2() {
   fi
 
   checkout_flash_attention
+  if [ "${UV_OFFLINE:-0}" != 1 ]; then
+    refresh_args=(--refresh-package flash-attn)
+  fi
   # FLASH_ATTN_CUDA_ARCHS empty: flash-attn adds no -gencode flag (unset, its five targets; a GB300's 103, PTX alone),
   # and torch adds TORCH_CUDA_ARCH_LIST's compiled target to a build that names none
   CUDA_HOME=$CUDA_TOOLKIT \
@@ -154,7 +161,7 @@ install_flash_attn_2() {
     FLASH_ATTENTION_FORCE_BUILD=TRUE \
     MAX_JOBS=$(compile_job_n "$FLASH_ATTN_2_JOB_N" "$FLASH_ATTN_2_JOB_GIB") \
     uv pip install --python "$PYTHON" --no-build-isolation --reinstall-package flash-attn \
-    --refresh-package flash-attn "$FLASH_ATTENTION_SRC"
+    "${refresh_args[@]}" "$FLASH_ATTENTION_SRC"
   echo "$inputs" > "$VERL_ENV/.pear_inputs_flash_attn_2"
 }
 

@@ -510,7 +510,7 @@ def rms_reference(residual: torch.Tensor, gamma: torch.Tensor) -> torch.Tensor:
     return rows * torch.rsqrt(rows.pow(2).mean(-1, keepdim=True) + EPS) * (gamma.double() + NORM_BIAS)
 
 
-def four_rank_checks(rank: int, rendezvous: str) -> None:
+def four_rank_checks(rank: int, rendezvous: str, force_fallback: bool = False) -> None:
     """The fused all-reduce + add into the fp32 residual stream + RMSNorm on one of four ranks against fp64: the pair
     of kernels, the op on each path, and the decoder layers' residual stream from the embedding to the final norm."""
     torch.cuda.set_device(rank)
@@ -523,20 +523,22 @@ def four_rank_checks(rank: int, rendezvous: str) -> None:
     generator = torch.Generator(device=DEVICE).manual_seed(6)  # the same draws on every rank
     text_config = types.SimpleNamespace(hidden_size=HIDDEN)
     model = types.SimpleNamespace(config=types.SimpleNamespace(get_text_config=lambda: text_config))
+    AllReduceNorm.multicast_unavailable = force_fallback
     AllReduceNorm.create_workspace(model)
     workspace = AllReduceNorm.workspace
-    buffers = (
-        int(workspace.uc_ptrs_dev),
-        int(workspace.uc_ptr_local),
-        int(workspace.mc_ptr),
-        AllReduceNorm.flags,
-        int(workspace.rank),
-    )
     gamma = (0.1 * torch.randn(HIDDEN, generator=generator, device=DEVICE)).bfloat16()
 
     # the pair up to the largest mixed-step graph: the reduced rows (fp32 sums over the ranks in rank order, rounded to
     # bf16) added into the fp32 residual; a verify step's and the widest uniform decode step's rows among them
-    for T in (1, 7, 64, 128, VERIFY_ROWS, UNIFORM_DECODE_ROWS, HopperMixedStepGraphs.MAX_TOKENS):
+    fused_rows = (1, 7, 64, 128, VERIFY_ROWS, UNIFORM_DECODE_ROWS, HopperMixedStepGraphs.MAX_TOKENS)
+    for T in fused_rows if workspace is not None else ():
+        buffers = (
+            int(workspace.uc_ptrs_dev),
+            int(workspace.uc_ptr_local),
+            int(workspace.mc_ptr),
+            AllReduceNorm.flags,
+            int(workspace.rank),
+        )
         residual = 3 * torch.randn(T, HIDDEN, generator=generator, device=DEVICE)
         partials = [torch.randn(T, HIDDEN, generator=generator, device=DEVICE).bfloat16() for _ in range(TP)]
         want = residual + sum(p.float() for p in partials).bfloat16().float()
@@ -564,7 +566,10 @@ def four_rank_checks(rank: int, rendezvous: str) -> None:
         x, new_residual = AllReduceNorm.apply(partials[rank].clone(), residual, norm)
 
         torch.cuda.synchronize()
-        assert new_residual.dtype == torch.float32 and bound.holds(new_residual, reference)
+        assert new_residual.dtype == torch.float32
+        assert bound.holds(new_residual, reference), (
+            f"rank={rank} rows={T} max residual error={(new_residual.double() - reference).abs().max().item()}"
+        )
         torch.testing.assert_close(x.double(), rms_reference(new_residual, gamma), rtol=BF16_ROUNDING, atol=NORM_ATOL)
 
     # the decoder layers keep the residual stream in fp32 from the embedding to the final norm, on either path: every
@@ -604,10 +609,11 @@ def four_rank_checks(rank: int, rendezvous: str) -> None:
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < TP, reason="the fused all-reduce runs over four GPUs")
-def test_the_fused_all_reduces_on_four_ranks(tmp_path):
+@pytest.mark.parametrize("force_fallback", [False, True])
+def test_the_fused_all_reduces_on_four_ranks(tmp_path, force_fallback):
     # the ranks meet at a file of the test's own: a free port picked beforehand can be taken by another process
     # before rank 0 binds it
-    torch.multiprocessing.spawn(four_rank_checks, args=(str(tmp_path / "rendezvous"),), nprocs=TP)
+    torch.multiprocessing.spawn(four_rank_checks, args=(str(tmp_path / "rendezvous"), force_fallback), nprocs=TP)
 
 
 def test_the_add_rmsnorm_against_fp64():
