@@ -32,6 +32,7 @@ Mac 上的已认证 socket 不能直接供 Mila 使用。密钥需要在对应�
 
 `./status` 先读取各站权威 `monitor.json` 的当前作业号，使用 Cluv 自身的 `Job` / `save_job`
 接口登记已有作业，再显示实时状态。登记不提交或取消 Slurm 作业。
+当前阶段若是 CPU 修复验证，会使用相应 CPU 提交收据登记，不把它标成 GPU 正式训练。
 已结束并从 `scontrol` 清除的作业使用 `sacct` 查询；失败状态会如实显示。
 原始提交命令、源码 commit 和来源保存在私有 `.state/imported-jobs.jsonl` 中。
 若连接未认证，Cluv 会显示 disconnected；这不是远端任务失败。
@@ -45,6 +46,10 @@ cluv sync tamia fir rorqual trillium-gpu --no-sync-datasets
 仅同步本管理项目，远端目录是各站 scratch 下的 `pear_cluv_control`。
 该项目没有训练依赖，`uv sync` 不会安装 PEAR / torch 或改动已有训练 venv。
 Cluv 自动对齐各站 uv 版本，首次同步前应核对工具版本。
+当前工具统一为 uv 0.12.13，从官方 PyPI wheel 安装并核对完整 SHA-256，旧工具留有备份。
+Tamia 的 Home 配额不足，其 uv/uvx 位于 `pear_work/tools/cluv-uv-0.12.13/bin`，
+`~/.local/bin` 仅放软链接。管理项目使用系统 Python 3.9+，禁止自动下载 Python；
+远端控制项目的 venv 和 uv 缓存均在 scratch，不安装训练环境到 Home。
 `results_path` 只指向 `pear_work/cluv_runs` 的管理输出，不包含模型、训练 checkpoint 或数据集。
 `cluv sync` 不会把约 306GiB 的训练 checkpoint 拉回 Mila；完整训练日志和结果仍在 `pear_work/runs`。
 

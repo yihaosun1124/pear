@@ -23,11 +23,19 @@ import json, os, pathlib, shlex, subprocess, datetime
 settings = SETTINGS
 monitor = json.loads(pathlib.Path(settings['monitor']).read_text())
 job = str(monitor['current_job_id'])
-receipt = json.loads(pathlib.Path(monitor['formal_submit_receipt']).read_text())
+is_build = str(monitor.get('build_job_id')) == job and monitor.get('build_submit_receipt')
+receipt_path = monitor['build_submit_receipt'] if is_build else monitor['formal_submit_receipt']
+receipt = json.loads(pathlib.Path(receipt_path).read_text())
 command = receipt.get('new_submit_command', receipt.get('command'))
 if not command:
     raise RuntimeError('No submission command in the authoritative receipt')
-script_index = command.index('deploy/train.sbatch')
+scripts = [i for i, arg in enumerate(command) if arg.endswith('.sbatch')]
+if len(scripts) != 1:
+    raise RuntimeError('Expected one Slurm launcher in the authoritative receipt')
+script_index = scripts[0]
+job_script = pathlib.Path(command[script_index])
+if not job_script.is_absolute():
+    job_script = pathlib.Path(settings['root']) / job_script
 flags = {}
 for value in command[1:script_index]:
     if value.startswith('--'):
@@ -52,7 +60,7 @@ print(json.dumps({
     'logical_cluster': ALIAS, 'current_job_id': int(job),
     'submitted_at': submitted + '+00:00',
     'git_commit': receipt['source_revision'],
-    'job_script': settings['root'] + '/deploy/train.sbatch',
+    'job_script': str(job_script),
     'sbatch_args': flags, 'program_args': command[script_index + 1:],
     'sbatch_command': shlex.join(command), 'state': state,
     'current_run': monitor['current_run'],
@@ -98,7 +106,10 @@ def main():
         job_id = int(record["current_job_id"])
         if job_id <= 0:
             raise RuntimeError("Invalid job ID")
-        if record["job_script"] != settings[alias]["root"] + "/deploy/train.sbatch":
+        launcher = Path(record["job_script"])
+        formal = Path(settings[alias]["root"]) / "deploy/train.sbatch"
+        build_dir = Path(settings[alias]["work"]) / "logs"
+        if launcher != formal and not (launcher.parent == build_dir and launcher.name.startswith("source-cache-validation-") and launcher.suffix == ".sbatch"):
             raise RuntimeError("Unexpected source launcher")
         identity = alias, job_id
         if identity not in known:

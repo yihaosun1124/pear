@@ -2,11 +2,13 @@
 name = "pear-cluv"
 version = "0.1.0"
 description = "Mila control project for the existing DRAC PEAR deployments"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 dependencies = []
 
 [tool.uv]
 package = false
+python-preference = "only-system"
+python-downloads = "never"
 
 [tool.cluv]
 job_script_path = "scripts/job.sh"
@@ -27,18 +29,30 @@ project_dir = "/scratch/s/sunyh/pear_cluv_control"
 results_path = "/scratch/s/sunyh/pear_work/cluv_runs"
 sbatch_args = { account = "aip-plbacon", partition = "gpubase_bynode_b1", nodes = 8, ntasks-per-node = 1, cpus-per-task = 48, gpus-per-node = "h100:4", mem = "450G", time = "02:00:00", job-name = "pear-stage1" }
 
+[tool.cluv.clusters.tamia.env]
+UV_CACHE_DIR = "/scratch/s/sunyh/pear_work/cache/cluv-uv"
+
 [tool.cluv.clusters.fir]
 project_dir = "/scratch/sunyh/pear_cluv_control"
 results_path = "/scratch/sunyh/pear_work/cluv_runs"
 sbatch_args = { account = "rrg-bengioy-ad_gpu", partition = "gpubase_bynode_b1", nodes = 8, ntasks-per-node = 1, cpus-per-task = 48, gpus-per-node = "h100:4", mem = "450G", time = "02:00:00", job-name = "pear-stage1" }
+
+[tool.cluv.clusters.fir.env]
+UV_CACHE_DIR = "/scratch/sunyh/pear_work/cache/cluv-uv"
 
 [tool.cluv.clusters.rorqual]
 project_dir = "/scratch/sunyh/pear_cluv_control"
 results_path = "/scratch/sunyh/pear_work/cluv_runs"
 sbatch_args = { account = "rrg-bengioy-ad_gpu", partition = "gpubase_bynode_b1", nodes = 8, ntasks-per-node = 1, cpus-per-task = 64, gpus-per-node = "h100:4", mem = "450G", time = "02:00:00", job-name = "pear-stage1" }
 
+[tool.cluv.clusters.rorqual.env]
+UV_CACHE_DIR = "/scratch/sunyh/pear_work/cache/cluv-uv"
+
 # The alias reaches trig-login01 through the Trillium CPU login host.
 [tool.cluv.clusters.trillium-gpu]
 project_dir = "/scratch/sunyh/pear_cluv_control"
 results_path = "/scratch/sunyh/pear_work/cluv_runs"
 sbatch_args = { account = "rrg-bengioy-ad", partition = "compute_full_node", nodes = 8, ntasks-per-node = 1, cpus-per-task = 96, gpus-per-node = "h100:4", mem = "0", time = "02:00:00", job-name = "pear-stage1" }
+
+[tool.cluv.clusters.trillium-gpu.env]
+UV_CACHE_DIR = "/scratch/sunyh/pear_work/cache/cluv-uv"
