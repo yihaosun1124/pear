@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd -- "$(dirname -- "$0")"
+export PATH="$HOME/.local/bin:$PATH"
+CLUV_PYTHON=${CLUV_PYTHON:-$HOME/.local/share/uv/tools/cluster-uv/bin/python}
+"$CLUV_PYTHON" scripts/import_jobs.py
+exec cluv status "$@"
