@@ -235,8 +235,14 @@ mapfile -t NODES < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
 HEAD=${NODES[0]}
 WORKER=${NODES[TRAINER_NNODES]}
 export RAY_ADDRESS=$HEAD:6379 PORT=6379
-export NUM_CPUS=$((SLURM_CPUS_PER_TASK - 8))
-((NUM_CPUS >= LIBERO_SERVERS_PER_NODE + 4)) || { echo 'Too few CPU slots' >&2; exit 2; }
+# verl's rollout placement group reserves two CPU slots per GPU. The driver may
+# also land on a rollout node: 32 simulator slots + 8 GPU slots + 1 driver needs
+# 41 Ray CPUs. Advertising only 40 on a 48-CPU allocation strands one simulator.
+export NUM_CPUS=$((SLURM_CPUS_PER_TASK - 4))
+((NUM_CPUS >= LIBERO_SERVERS_PER_NODE + 2 * 4 + 1)) || {
+  echo 'Too few Ray CPU slots for simulators, GPU workers and the driver' >&2
+  exit 2
+}
 export RAY_AUTH_MODE=token RAY_AUTH_TOKEN_PATH=$RUN/ray-token
 "$WORK_DIR/envs/verl/bin/python" -c \
   'import secrets,sys; open(sys.argv[1],"w").write(secrets.token_hex(32))' "$RAY_AUTH_TOKEN_PATH"

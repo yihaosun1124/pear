@@ -51,7 +51,20 @@ MAX_WORKER_PORT=5999
 
 # A trainer or rollout machine: the GPU processes' variables, the role as a Ray resource, the workers' ports.
 configure_gpu_machine() {
-  local first_ephemeral_port
+  local first_ephemeral_port minimum_cpu_slots
+  if [ "$ROLE" = rollout ]; then
+    minimum_cpu_slots=$((LIBERO_SERVERS_PER_NODE + 2 * GPU_N + 1))
+    # A queued sbatch script may still export the old 40-slot budget. Use only
+    # CPUs already granted by Slurm, keeping four for processes outside Ray.
+    if ((NUM_CPUS < minimum_cpu_slots)) && [ -n "${SLURM_CPUS_PER_TASK:-}" ] &&
+      ((SLURM_CPUS_PER_TASK - 4 >= minimum_cpu_slots)); then
+      NUM_CPUS=$((SLURM_CPUS_PER_TASK - 4))
+    fi
+    if ((NUM_CPUS < minimum_cpu_slots)); then
+      echo "Too few Ray CPU slots: need $minimum_cpu_slots for $LIBERO_SERVERS_PER_NODE simulators, $GPU_N GPUs and a driver; got $NUM_CPUS" >&2
+      exit 1
+    fi
+  fi
   # shellcheck source=gpu_process_variables.sh
   source "$ROOT/scripts/gpu_process_variables.sh" "$VERL_ENV"
   # the role, by which verl places the trainer's and the replicas' pools

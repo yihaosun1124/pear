@@ -15,7 +15,6 @@ GPU_N = 2  # the GPUs the stand-in nvidia-smi lists
 # The programs the node start calls: the machine's nvidia-smi, the training environment's python, which names the
 # directory of its packages, and its ray, which records its arguments instead of starting a node.
 STAND_INS = {
-    "bin/nvidia-smi": f'#!/bin/sh\nfor gpu in $(seq {GPU_N}); do echo "GPU $gpu: a stand-in"; done\n',
     "env/bin/python": "#!/bin/sh\necho /packages\n",
     "env/bin/ray": '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$RAY_RECORD"\n',
 }
@@ -24,12 +23,16 @@ STAND_INS = {
 class NodeStart:
     """scripts/start_ray_node.sh on stand-in programs, the machine's own directory under the test's."""
 
-    def __init__(self, directory: Path) -> None:
+    def __init__(self, directory: Path, gpu_n: int = GPU_N) -> None:
         self.directory = directory
         self.local_dir = directory / "local" / "pear"
         self.ray_record = directory / "ray_arguments"
 
-        for name, text in STAND_INS.items():
+        programs = {
+            **STAND_INS,
+            "bin/nvidia-smi": f'#!/bin/sh\nfor gpu in $(seq {gpu_n}); do echo "GPU $gpu: a stand-in"; done\n',
+        }
+        for name, text in programs.items():
             path = directory / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
@@ -85,3 +88,21 @@ def test_a_rollout_machine_registers_its_libero_slots_next_to_its_role(node_star
 
     # what a LIBERO family counts its servers from (server_n of its env class)
     assert json.loads(resources.removeprefix("--resources=")) == {"rollout": GPU_N, "libero": 12}
+
+
+def test_a_queued_48_cpu_job_keeps_all_32_simulators_schedulable(tmp_path):
+    node = NodeStart(tmp_path, gpu_n=4)
+    arguments = node.run("rollout", NUM_CPUS="40", SLURM_CPUS_PER_TASK="48", LIBERO_SERVERS_PER_NODE="32")
+
+    assert "--num-cpus=44" in arguments
+    resources = json.loads(next(arg.removeprefix("--resources=") for arg in arguments if arg.startswith("--resources=")))
+    assert resources == {"rollout": 4, "libero": 32}
+
+
+def test_the_node_refuses_a_cpu_budget_that_cannot_hold_the_workers(tmp_path):
+    node = NodeStart(tmp_path, gpu_n=4)
+    with pytest.raises(subprocess.CalledProcessError) as failure:
+        node.run("rollout", NUM_CPUS="40", SLURM_CPUS_PER_TASK="44", LIBERO_SERVERS_PER_NODE="32")
+
+    assert "need 41" in failure.value.stderr
+    assert not node.ray_record.exists()

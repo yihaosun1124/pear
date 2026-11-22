@@ -653,7 +653,13 @@ GPU 环境检查应在已分配的 H100 上执行：加载 `scripts/gpu_process_
 | Rorqual | `/scratch/sunyh` | `rrg-bengioy-ad_gpu` | `gpubase_bynode_b1` | 64 | `450G` |
 
 这些 H100 节点均为每节点 4 卡。不能沿用原 96 CPU 请求，否则会超出节点资源。
-48 CPU 时 Ray 使用 40 CPU，仍满足正式配置的每节点 32 个 LIBERO server；训练超参数不变。
+48 CPU 时 Ray 使用 44 CPU，另留 4 CPU 给 Ray 外的进程。正式 rollout 的 placement group
+每张 GPU 预留 2 个 CPU：32 个 LIBERO server + 4×2 个 GPU worker CPU + 至少 1 个控制进程
+需要 41 个 Ray CPU。旧的 40 CPU 配置在 Fir 正式任务 5100692 上只启动了 191/192 个 server，
+最后一个因 CPU 资源不足排队至 600 秒超时；短 smoke 的 4 server/node 未触发该问题。
+当前启动检查要求至少 41 个可调度 CPU；GPU、Slurm CPU 申请与训练超参数不变。
+`start_ray_node.sh` 也会在已获 Slurm 48 CPU 的范围内修正旧脚本传来的 40-slot 预算，
+因此尚在排队的旧 sbatch 快照可使用此运行时修复，无需仅为更新脚本重新排队。
 三个站点的 450G 请求均通过提交校验；运行中的 cgroup 上限仍需在实际分配后核对。
 
 Rorqual 的 H100 硬件探测作业 `27335380` 在 `rg21706` 实测 4 个 NUMA 域，
