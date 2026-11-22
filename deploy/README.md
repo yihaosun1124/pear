@@ -30,7 +30,7 @@
 | 下载缓存 / 编译缓存 / 编译后 wheel | `pear_work/cache`、`pear_work/cache/ccache`、`pear_work/wheels` |
 | C++ 运行库 / CUDA 链接 stub | `pear_work/runtime/lib`、`pear_work/runtime/cuda-driver-stubs` |
 | Slurm 输出 / 训练结果与 checkpoint | `pear_work/logs`、`pear_work/runs` |
-| 每个作业、每个节点自己的 JIT 与 Ray 临时目录 | `/tmp/$USER/pear-<jobid>`，退出时清理 |
+| 每个作业、每个节点自己的 JIT 与 Ray 临时目录 | 优先磁盘上的 `$SLURM_TMPDIR/pear-<jobid>`；Ray 使用同一作业磁盘的 `$SLURM_TMPDIR/r`。无合适的 Slurm 目录时按启动器选择 `/localscratch/$USER` 或磁盘 `/tmp` |
 
 本次版本：PEAR `2a81b2eec95e6e6f19c3fc0a80a38aebb40a30e2` 加下表修复，
 torch `2.14.0+cu130`、vLLM `0.34.0`、Ray `2.58.0`、transformers `5.22.2`。
@@ -277,6 +277,16 @@ Torch extensions、CUDA、FA4 和 FlashInfer 的节点缓存；batch shell 在�
 清理阶段同样使用当前作业的路径。共享的 `HF_HOME` 和 `CCACHE_DIR` 保留。
 回归检查为 `python tests/test_gpu_process_variables_on_cpu.py`：覆盖父作业路径泄漏、GPU 分配保留、
 非 Slurm 显式覆盖和不支持磁盘的 Python 缓存回退。
+
+Ray 的 Unix socket 完整路径不能超过 107 字节。Fir 的 `5061338` 已通过 Hopper backward、
+FlashInfer 和四卡 allreduce，却因
+`/localscratch/sunyh.5061338.0/pear-5061338/ray/session_.../sockets/plasma_store`
+过长，在 Ray head 启动时失败，尚未执行 RL 更新。
+启动器现在调用 `pear_set_ray_tmpdir`：若 `LOCAL_DIR` 直接位于当前作业的 `SLURM_TMPDIR` 下，
+Ray 使用该私有目录中的短子目录 `r`；否则仍使用已选择的磁盘 `LOCAL_DIR/ray`。
+路径由 batch shell 选定并传给所有 step，不会移入 tmpfs；Ray 日志归档读取实际的 `RAY_TMPDIR`。
+回归检查通过真实 Unix socket 绑定覆盖原长路径失败、短路径成功及磁盘回退，
+CPU 计算作业还应使用该路径启动 Ray 并执行一个独立任务，再发布新版本的启动缓存。
 
 在 CPU 计算作业内完成全部检查后，可保存这个节点已经生成的 bytecode，供该集群 GPU 作业使用。
 下面的发布命令必须放在成功的 pytest 命令之后，并由 `set -e` 保证失败时不执行。
@@ -609,6 +619,7 @@ Ray token 文件权限仅限当前用户，不要提交到代码仓库或分享�
 | FlashInfer JIT 报 `cannot find -lcuda` | pip CUDA toolkit 缺 driver 链接 stub。按 2.3 节补齐，仅加 LIBRARY_PATH；执行用真实 libcuda.so.1。 |
 | actor 已初始化、rollout 也完成，却在 backward 失败 | FLA backward 延迟导入 TileLang，默认缓存写只读 home。`TILELANG_CACHE_DIR` 和 `TILELANG_TMP_DIR` 必须指向每节点 LOCAL_DIR；仅检查 import 或模型加载不够。 |
 | 多进程共享编译缓存冲突 / 临时目录残留 | JIT、CUDA、Ray 的临时目录按 job id 隔离；退出前归档 Ray 日志、停止 Ray、清理该作业的确切目录。不要假定 /tmp 是独立 SSD；若站点使用 tmpfs，临时文件也计入主存预算。 |
+| Ray head 报 `AF_UNIX path length cannot exceed 107 bytes` | GPU 预检通过仍可能在创建 Ray socket 时失败。保持节点磁盘和作业隔离，使用作业私有 `SLURM_TMPDIR/r` 缩短前缀，归档使用实际 `RAY_TMPDIR`；不要通过把 Ray 数据移入 tmpfs 解决路径长度。 |
 | CPU 检查很慢并输出 `Timeout (0:05:00)!` 栈 | pytest 的 300 秒 faulthandler 只打印诊断栈，不会终止测试。Fir 实测栈停在 importlib 的 `.pyc` 写入与目录查询，进程等待 Lustre RPC 且读写量继续增长。共享文件系统禁止新 bytecode 写入；有节点磁盘时使用本地 `PYTHONPYCACHEPREFIX`。先查真实进程、退出码和最终测试结果，不要把这条诊断当失败后重启安装。 |
 | 禁用 `.pyc` 写入后仍长时间停在 collecting | 查看调用栈是否在 `packages_distributions → Distribution.files → Path.exists` 遍历头文件。第 2.4 节的元数据 hook 合并同一顶层包的重复查询；依赖识别与原函数对照一致，不修改包版本或关闭训练模块。保留当前活跃验证，新启动进程经 GPU 环境脚本使用修复。 |
 | NVIDIA worker 报 `Please don't set ROCR_VISIBLE_DEVICES when HIP/CUDA_VISIBLE_DEVICES is set` | Rorqual 的 GPU 预检已通过，但 Ray worker 收到了同时存在的 CUDA / ROCR 设备变量。NVIDIA 运行环境在每个 Slurm step 内加载 `gpu_process_variables.sh` 时清除 `ROCR_VISIBLE_DEVICES` 和 `HIP_VISIBLE_DEVICES`，保留 CUDA 分配；不修改 GPU 数量或训练参数。 |

@@ -1,4 +1,5 @@
 import os
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -40,10 +41,11 @@ class GpuProcessVariablesTest(unittest.TestCase):
             path.write_text(source)
             path.chmod(0o755)
 
-    def source(self, slurm=True, filesystem="xfs"):
+    def source(self, slurm=True, filesystem="xfs", ray_setup=False, **variables):
         env = dict(os.environ)
         env.pop("SLURM_JOB_ID", None)
         env.pop("SLURM_JOBID", None)
+        env.pop("SLURM_TMPDIR", None)
         env.update({name: str(self.root / "old-cpu-job" / name) for name in CACHES})
         env.update(
             LOCAL_DIR=str(self.local),
@@ -60,13 +62,16 @@ class GpuProcessVariablesTest(unittest.TestCase):
         )
         if slurm:
             env["SLURM_JOB_ID"] = "998877"
+        env.update(variables)
         names = [*CACHES, "PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE",
                  "CUDA_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES",
-                 "HF_HOME", "CCACHE_DIR"]
-        script = ('set -euo pipefail\nsource "$1" "$2"\n'
-                  'for name in ' + " ".join(names) + '; do\n'
-                  '  printf "%s=%s\\n" "$name" "${!name-}"\n'
-                  'done\n')
+                 "HF_HOME", "CCACHE_DIR", "RAY_TMPDIR"]
+        script = 'set -euo pipefail\nsource "$1" "$2"\n'
+        if ray_setup:
+            script += 'pear_set_ray_tmpdir\n'
+        script += ('for name in ' + " ".join(names) + '; do\n'
+                   '  printf "%s=%s\\n" "$name" "${!name-}"\n'
+                   'done\n')
         result = subprocess.run(
             ["bash", "-c", script, "cache-regression", str(HELPER), str(self.environment)],
             env=env, text=True, capture_output=True, check=True, timeout=30,
@@ -94,6 +99,35 @@ class GpuProcessVariablesTest(unittest.TestCase):
         values = self.source(filesystem="tmpfs")
         self.assertEqual(values["PYTHONPYCACHEPREFIX"], "")
         self.assertEqual(values["PYTHONDONTWRITEBYTECODE"], "1")
+
+    def test_ray_socket_binds_below_a_long_slurm_job_directory(self):
+        # Reproduce Ray's actual session/socket suffix, then ask the OS to bind
+        # it. A string-length-only check would miss the real AF_UNIX failure.
+        with tempfile.TemporaryDirectory(prefix="p", dir="/tmp") as temporary:
+            parent = Path(temporary) / "sunyh.5061338.0"
+            local = parent / "pear-5061338"
+            local.mkdir(parents=True)
+            suffix = Path("session_2026-11-21_20-07-19_840419_2648463/sockets/plasma_store")
+            old_socket = local / "ray" / suffix
+            old_socket.parent.mkdir(parents=True)
+            with socket.socket(socket.AF_UNIX) as connection:
+                with self.assertRaises(OSError):
+                    connection.bind(str(old_socket))
+
+            values = self.source(ray_setup=True, LOCAL_DIR=str(local), SLURM_TMPDIR=str(parent),
+                                 RAY_TMPDIR=str(self.root / "old-cpu-job/ray"))
+            ray = Path(values["RAY_TMPDIR"])
+            self.assertTrue(ray.is_relative_to(parent))
+            address = ray / suffix
+            address.parent.mkdir(parents=True)
+            with socket.socket(socket.AF_UNIX) as connection:
+                connection.bind(str(address))
+            self.assertEqual(ray.stat().st_dev, local.stat().st_dev)
+
+    def test_ray_keeps_the_selected_disk_when_slurm_tmpdir_was_rejected(self):
+        values = self.source(ray_setup=True, SLURM_TMPDIR=str(self.root / "rejected-tmpfs"),
+                             RAY_TMPDIR=str(self.root / "old-cpu-job/ray"))
+        self.assertEqual(values["RAY_TMPDIR"], str(self.local / "ray"))
 
 
 if __name__ == "__main__":

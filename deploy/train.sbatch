@@ -125,8 +125,9 @@ mkdir -p "$RUN" "$LOCAL_DIR"
 # Initialize the batch shell too: token generation and cleanup run outside the
 # srun workers and must not inherit a submitting CPU job's node-local caches.
 source "$ROOT/scripts/gpu_process_variables.sh" "$WORK_DIR/envs/verl"
+pear_set_ray_tmpdir
 export CCACHE_DIR=$WORK_DIR/cache/ccache XDG_CACHE_HOME=$LOCAL_DIR/xdg-cache
-export RAY_TMPDIR=$LOCAL_DIR/ray HF_HOME=$WORK_DIR/cache/hf HF_HUB_OFFLINE=1
+export HF_HOME=$WORK_DIR/cache/hf HF_HUB_OFFLINE=1
 export NCCL_LAUNCH_ORDER_IMPLICIT=1 NCCL_MNNVL_ENABLE=0 VLLM_ALLREDUCE_USE_FLASHINFER=0
 export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1
 
@@ -248,8 +249,8 @@ cleanup() {
     wait "$TRAIN_PREFLIGHT_PID" 2>/dev/null || true
   fi
   srun --overlap --nodes="$TOTAL_NODES" --ntasks="$TOTAL_NODES" --ntasks-per-node=1 --cpus-per-task=1 \
-    bash -c 'if [ -d "$LOCAL_DIR/ray/session_latest/logs" ]; then
-      tar -czf "$RUN/ray-logs-$SLURM_JOB_ID-$(hostname).tar.gz" -C "$LOCAL_DIR/ray/session_latest" logs; fi' \
+    bash -c 'if [ -d "$RAY_TMPDIR/session_latest/logs" ]; then
+      tar -czf "$RUN/ray-logs-$SLURM_JOB_ID-$(hostname).tar.gz" -C "$RAY_TMPDIR/session_latest" logs; fi' \
     > "$RUN/archive-ray-$SLURM_JOB_ID.log" 2>&1 || true
   srun --overlap --nodes="$TOTAL_NODES" --ntasks="$TOTAL_NODES" --ntasks-per-node=1 --cpus-per-task=1 \
     "$WORK_DIR/envs/verl/bin/ray" stop --force > "$RUN/ray-stop-$SLURM_JOB_ID.log" 2>&1 || true

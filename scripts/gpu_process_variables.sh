@@ -7,6 +7,17 @@
 
 PYTHON_ENV=${1:?the Python environment of the processes, one that scripts/install.sh built}
 
+# The allocation launcher calls this once and exports the result to every step.
+# Ray adds a session name and sockets below this root; an extra pear-<jobid>/ray
+# level can exceed AF_UNIX's 107-byte limit. SLURM_TMPDIR already isolates jobs.
+pear_set_ray_tmpdir() {
+  export RAY_TMPDIR=$LOCAL_DIR/ray
+  if [ -n "${SLURM_JOB_ID:-}" ] && [ -n "${SLURM_TMPDIR:-}" ] && \
+    [ "$(dirname -- "$LOCAL_DIR")" = "${SLURM_TMPDIR%/}" ]; then
+    export RAY_TMPDIR=${SLURM_TMPDIR%/}/r
+  fi
+}
+
 # sbatch can inherit cache paths exported by a parent CPU allocation. Each Slurm
 # job uses its caller's LOCAL_DIR; another job's /localscratch is not accessible.
 if [ -n "${SLURM_JOB_ID:-}" ]; then
