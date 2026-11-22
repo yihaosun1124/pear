@@ -27,20 +27,28 @@ is_build = str(monitor.get('build_job_id')) == job and monitor.get('build_submit
 receipt_path = monitor['build_submit_receipt'] if is_build else monitor['formal_submit_receipt']
 receipt = json.loads(pathlib.Path(receipt_path).read_text())
 command = receipt.get('new_submit_command', receipt.get('command'))
-if not command:
-    raise RuntimeError('No submission command in the authoritative receipt')
-scripts = [i for i, arg in enumerate(command) if arg.endswith('.sbatch')]
-if len(scripts) != 1:
-    raise RuntimeError('Expected one Slurm launcher in the authoritative receipt')
-script_index = scripts[0]
-job_script = pathlib.Path(command[script_index])
-if not job_script.is_absolute():
-    job_script = pathlib.Path(settings['root']) / job_script
-flags = {}
-for value in command[1:script_index]:
-    if value.startswith('--'):
-        key, sep, item = value[2:].partition('=')
-        flags[key] = item if sep else True
+if receipt.get('native_sbatch_command'):
+    job_script = pathlib.Path(receipt['job_script'])
+    flags = receipt['sbatch_args']
+    program_args = receipt['program_args']
+    command_text = receipt['native_sbatch_command']
+else:
+    if not command:
+        raise RuntimeError('No submission command in the authoritative receipt')
+    scripts = [i for i, arg in enumerate(command) if arg.endswith('.sbatch')]
+    if len(scripts) != 1:
+        raise RuntimeError('Expected one Slurm launcher in the authoritative receipt')
+    script_index = scripts[0]
+    job_script = pathlib.Path(command[script_index])
+    if not job_script.is_absolute():
+        job_script = pathlib.Path(settings['root']) / job_script
+    flags = {}
+    for value in command[1:script_index]:
+        if value.startswith('--'):
+            key, sep, item = value[2:].partition('=')
+            flags[key] = item if sep else True
+    program_args = command[script_index + 1:]
+    command_text = shlex.join(command)
 env = os.environ.copy(); env['TZ'] = 'UTC'
 query = subprocess.run(['scontrol', 'show', 'job', job, '-o'], text=True,
                        capture_output=True, env=env)
@@ -61,8 +69,8 @@ print(json.dumps({
     'submitted_at': submitted + '+00:00',
     'git_commit': receipt['source_revision'],
     'job_script': str(job_script),
-    'sbatch_args': flags, 'program_args': command[script_index + 1:],
-    'sbatch_command': shlex.join(command), 'state': state,
+    'sbatch_args': flags, 'program_args': program_args,
+    'sbatch_command': command_text, 'state': state,
     'current_run': monitor['current_run'],
     'observed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
     'import_origin': 'Read from authoritative PEAR monitor and real Slurm job; no submission'
@@ -108,8 +116,9 @@ def main():
             raise RuntimeError("Invalid job ID")
         launcher = Path(record["job_script"])
         formal = Path(settings[alias]["root"]) / "deploy/train.sbatch"
+        control = Path(settings[alias]["root"]).parent / "pear_cluv_control/scripts/job.sh"
         build_dir = Path(settings[alias]["work"]) / "logs"
-        if launcher != formal and not (launcher.parent == build_dir and launcher.name.startswith("source-cache-validation-") and launcher.suffix == ".sbatch"):
+        if launcher not in (formal, control) and not (launcher.parent == build_dir and launcher.name.startswith("source-cache-validation-") and launcher.suffix == ".sbatch"):
             raise RuntimeError("Unexpected source launcher")
         identity = alias, job_id
         if identity not in known:

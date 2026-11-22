@@ -53,17 +53,37 @@ Tamia 的 Home 配额不足，其 uv/uvx 位于 `pear_work/tools/cluv-uv-0.12.13
 `results_path` 只指向 `pear_work/cluv_runs` 的管理输出，不包含模型、训练 checkpoint 或数据集。
 `cluv sync` 不会把约 306GiB 的训练 checkpoint 拉回 Mila；完整训练日志和结果仍在 `pear_work/runs`。
 
-## 后续提交 PEAR 训练
+## 四站竞速提交 PEAR 训练
 
-当前四个正式任务已经提交，不需要再次执行下面的命令。
-确认上一轮任务结束后，可提交新的独立运行：
+在 Mila 的 login-2 上执行：
 
 ```bash
-cluv submit fir
-# 或 cluv submit tamia / rorqual / trillium-gpu
+cd "$SCRATCH/pear-cluv"
+./submit
+./submit --status
 ```
 
-每次仅使用一个 account，不使用 `submit first` 或多 account 竞速。
+`./submit` 严格只向 Tamia、Fir、Rorqual、Trillium GPU 各提交一份申请。
+它复用 Cluv 原生的代码同步、`get_submissions`、`submit_job` 和作业缓存 API，
+外层补充防重复、资源审核、monitor 收据和后台竞速。
+所有新候选先 hold；四站都真实提交、登记且核对资源后，一起 release。
+第一个真实进入 RUNNING 的作业获胜，其余候选被取消并核对终态。
+预测 StartTime、FAILED 和 CANCELLED 不算获胜；两站同时运行时按真实开始时间选择。
+取消意图先写入各站 monitor，再 scancel 本轮具体 jobid，落选不是训练故障。
+
+竞速控制器运行在独立 tmux `pear-cluv-race`，当前终端断开后继续等待。
+状态为 `.state/race.json`，每轮记录在 `.state/races/`，日志为 `.state/race.log`。
+重复运行入口会复用当前控制器或已有候选，不重复申请；提交回执不明确或只有部分 held 申请时，
+必须先核对队列与收据，不自动再申请四份。SSH 失效不会自动发 Duo。
+
+不能直接把 `cluv submit first` 当作本项目入口：原生实现还会包含运行命令的 Mila 本机，
+且未强制四个目标都齐备。上述封装明确排除 Mila 和 Trillium CPU 调度器。
+官方竞速说明：<https://mila-iqia.github.io/cluv/guides/submit/racing-clusters/>。
+
+2026-11-22 首轮接管了已有四个排队作业，保留其队列位置，没有重新申请四份 GPU。
+Fir `5119676` 首先运行，Tamia `774175`、Rorqual `27386847`、Trillium `1388261` 已确认取消。
+赢家继续训练；修复监控只跟踪赢家，不会把落选重新提交。
+
 `pyproject.toml` 配置 8 个节点、每节点 4 张 H100、2 小时；`scripts/job.sh` 调用已有 PEAR
 入口，分配 2 个 actor 节点（8 卡）和 6 个 rollout 节点（24 卡）。
 保留 BATCH128、N8、4096+160000 token、FSDP8/SP8、TP4、MTP3、每副本64 sessions、官方 group filter。
@@ -73,7 +93,47 @@ Rorqual NUMA headroom32GiB，其他站默认100GiB；Trillium 要求 `mem=0`，�
 
 取消单个任务可用对应的 SSH 别名，例如 `ssh fir scancel <jobid>`；不要把 `scancel` 广播到所有集群。
 Cluv 的新提交会使用 `cluv-pear-stage1` 作业名，现有登记作业仍保持原来的 `pear-stage1` 名称。
-原有 Codex 监控跟踪各站 monitor 的当前任务；手工新提交的后续运行需同步更新其权威状态，不能沿用旧 jobid。
+统一入口会原子更新各站 monitor 的 current job、RUN、提交收据和竞速结果。
+保留原有每 4 小时故障监控；正常两小时预算结束后不无限续跑。
+
+## 调用链与文件来源
+
+```text
+Mila ./submit
+  → scripts/submit_race.py：同步管理项目、四站 sbatch、资源审核、选赢家和取消落选
+  → 各站 Slurm 启动 scripts/job.sh
+  → scripts/launch_pear.py：校验统一文件，选择站点路径，传入统一训练参数
+  → bash $PEAR_ROOT/deploy/train.sbatch
+  → scripts/gpu_process_variables.sh + scripts/start_ray_node.sh
+  → examples/models/qwen3_8_27b_pear/train/run_stage1.sh
+  → python -m pear.trainer.main
+  → TrainingRunner / PearTrainer / verl：rollout、奖励与过滤、actor 更新、checkpoint
+```
+
+| 文件 | 来源 | 功能 |
+|---|---|---|
+| `pyproject.toml` | Cluv 初始化骨架，本项目填写 | 四站 account、分区、CPU、内存、32GPU/2h 和管理目录 |
+| `clusters.json` | 本项目新增 | PEAR/WORK/monitor 路径、真实 Slurm 集群名、NUMA 和临时盘策略 |
+| `launcher_manifest.json` | 本项目新增 | 统一启动层三个文件的 SHA-256，提交前和启动时核对 |
+| `submit`、`scripts/submit_race.py` | 本项目新增 | 固定四站竞速、后台等待、防重复和状态收据 |
+| `scripts/job.sh` | Cluv 模板改写 | Slurm 作业入口，执行 Python 适配器 |
+| `scripts/launch_pear.py` | 本项目新增 | 找到已有 PEAR 环境，调用统一训练脚本；不重新申请节点 |
+| PEAR `deploy/train.sbatch` | 本次 DRAC 部署新增 | 节点角色、预检、本地缓存、Ray 集群和清理；四站内容一致 |
+| PEAR `scripts/start_ray_node.sh` | 官方 PEAR，附部署兼容补丁 | 各节点启动 Ray，注册 trainer/rollout/LIBERO 资源和 CPU slots |
+| PEAR `scripts/gpu_process_variables.sh` | 官方 PEAR，附部署兼容补丁 | 环境、CUDA/运行库、本地 JIT/cache 和短 Ray socket 路径 |
+| PEAR `examples/.../train/run_stage1.sh` | 官方 Stage1 recipe | 将超参数组合成 Hydra 配置并启动训练 Python |
+| PEAR `pear/trainer/main.py`、`runner.py`、`trainer.py` | 官方 PEAR | 配置加载、Ray/TransferQueue 调度与实际 RL 训练 |
+| PEAR `pear/configs/training.yaml` | 官方配置，附用户要求的 checkpoint 保留设置 | GRPO/group filter、优化器及训练基础设置 |
+| `status`、`scripts/import_jobs.py`、`login` | 本项目新增 | 查询/登记已有任务和保持 SSH 连接，不在 RL 计算路径内 |
+
+Cluv 负责外层 sbatch 申请；内层 `train.sbatch` 用 bash 执行，其 `#SBATCH` 行是注释，
+因此不会在训练作业内再提交一份作业。account/分区/CPU/memory 的站点差异来自 `pyproject.toml`。
+
+统一启动层的源文件在 fork 的 `drac` 分支，版本 `0356762`。
+四站只定点同步这三个文件，并保留各训练 ROOT 的原 HEAD、其它兼容补丁及同站缓存。
+这不表示整个 PEAR 工作树已完全同版本；算法源码和环境仍按各站已经验收的部署使用。
+当前 Fir 的 Slurm batch 启动快照保留不变，新提交才读取统一后的启动文件。
+后续更新启动层应先验证、同步三文件并更新 manifest，避免调用时混用不同版本。
 
 ## 目录与配置
 

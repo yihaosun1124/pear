@@ -22,6 +22,7 @@
     "slurm_cluster": "grillium",
     "root": "/scratch/sunyh/pear",
     "work": "/scratch/sunyh/pear_work",
-    "monitor": "/scratch/sunyh/pear_work/runs/monitor-1378905.json"
+    "monitor": "/scratch/sunyh/pear_work/runs/monitor-1378905.json",
+    "allow_tmpfs_local": true
   }
 }

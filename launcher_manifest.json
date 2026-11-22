@@ -1,0 +1,10 @@
+{
+  "source_repository": "https://github.com/yihaosun1124/pear",
+  "source_branch": "drac",
+  "source_commit": "0356762",
+  "files": {
+    "deploy/train.sbatch": "7fee68ffa032c03999dc37fe044d228bfdcb802317e63f46708557cc244cf2b3",
+    "scripts/start_ray_node.sh": "85c2c4c20f42f46690df99beba267dcf9e79c19a9019faa1fa54f3e56ee66fea",
+    "scripts/gpu_process_variables.sh": "45dd9584ecb06e17f8c9c208307044bfb5cb86763244502a0f706073167dfd7d"
+  }
+}
