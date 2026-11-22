@@ -54,6 +54,10 @@ keep1 在新 checkpoint 完整后才删除旧份，保存峰值仍约两份核�
 | Rorqual | `rrg-bengioy-ad_gpu` / `gpubase_bynode_b3` | 64 | `450G` | 32GiB |
 | Trillium GPU | `rrg-bengioy-ad` / `compute_full_node` | 96 | `0` 整节点 | 100GiB |
 
+Fir 暂时排除 `fc10609`：正式任务 `5132847` 在该节点发生 CUDA 初始化失败，
+同轮其余五个 rollout 副本均成功 pin 满 64GiB。节点底层原因尚未确认；恢复后移除
+`pyproject.toml` 中 Fir 的 `exclude`。每个节点的 CUDA 运算与 pinned memory 预检日志在实际 RUN 下。
+
 24 小时申请需使用三站的 `b3` 分区；`b1` 最长 3 小时，`b2` 最长 12 小时。
 改时限时应同时核对实际分区限制，或省略 partition 让站点包装器自动选择。
 Trillium 包装器只允许 `mem=0`，没有 450G 硬上限；其内存临时盘也计入主存使用。
