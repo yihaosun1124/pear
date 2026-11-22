@@ -1,4 +1,4 @@
-# PEAR: Cluv 四站竞速
+# PEAR: Cluv 五站竞速
 
 管理目录：Mila `login-2.server.mila.quebec` 的 `$SCRATCH/pear-cluv`
 （`/network/scratch/s/sunyi/pear-cluv`）。PEAR、模型、环境和 checkpoint 留在各站 scratch。
@@ -9,7 +9,7 @@
 ssh mila
 cd "$SCRATCH/pear-cluv"
 hostname                         # 认证连接保留在 login-2
-./login --check                   # 四站连接必须全部有效
+./login --check                   # 五站连接必须全部有效
 cluv status jobs --all-jobs       # 先确认没有已有 PEAR 排队/运行任务
 tmux new -s pear-race
 cluv submit first --no-sync-datasets --no-fetch-results
@@ -21,7 +21,7 @@ Cluv 原生负责同步代码、提交、轮询和取消落选。Ctrl-b d 脱离
 首个任务运行后，Cluv 取消其余候选并返回赢家；训练是否成功需继续看真实 RL 指标和 checkpoint。
 Cluv 的同步/提交是异步的，已经有赢家时可能跳过仍未提交的站点；沿用其原生行为。
 
-`first` 使用已认证且启用的集群，因此每轮提交前必须确认四站连接全部有效。
+`first` 使用已认证且启用的集群，因此每轮提交前必须确认五站连接全部有效。
 连接失效时用 `./login fir`（或其它站名）完成认证，再 Ctrl-b d 保留连接。
 `login` 只保持 SSH 会话，不参与竞速。不要关闭已有 `pear-cluv-access` 会话。
 Mila 在本项目中已执行 `cluv disable mila`，不参加训练；不要将其重新启用。
@@ -33,7 +33,7 @@ Trillium GPU 别名经 CPU 登录节点到 `trig-login01`，实际 Slurm 集群�
 
 | 文件 | 作用 |
 |---|---|
-| `pyproject.toml` | 共同资源，以及四站 account、分区、CPU、内存、路径、NUMA 和临时盘差异 |
+| `pyproject.toml` | 共同资源，以及五站节点数、每节点卡数、account、分区、CPU、内存、路径、NUMA 和临时盘差异 |
 | `scripts/job.sh` | 在已有分配内用 bash 调用各站同一份 PEAR `deploy/train.sbatch` |
 | `patches/cluv-0.1.8.patch` | 当前 Cluv 的两处小兼容修正，不实现竞速逻辑 |
 
@@ -42,7 +42,9 @@ Trillium GPU 别名经 CPU 登录节点到 `trig-login01`，实际 Slurm 集群�
 已删除自定义 `submit`、`submit_race.py`、`status/import_jobs.py`、Python 启动适配器及其重复配置。
 原生 Cluv 作业缓存已登记的历史任务仍保留；旧 `.state/race.json` 仅为历史证据，不再控制提交。
 
-四站共同申请 8 节点 × 4 H100、24 小时，2 个 actor 节点（8 卡）＋6 个 rollout 节点（24 卡）。
+五站都申请 32 张 H100、24 小时，actor 8 卡＋rollout 24 卡。
+Tamia/Fir/Rorqual/Trillium 使用 8 节点×4 卡（2 个 actor＋6 个 rollout 节点）；
+Nibi 使用 4 节点×8 卡（1 个 actor＋3 个 rollout 节点），每 rollout 节点 64 个模拟器，仍共 192 个。
 保持 BATCH128、N8、PROMPT4096、RESPONSE160000、STEPS1000、EPOCHS100、FSDP8/SP8、TP4、
 MTP3、sessions64/副本及官方 group filter。LMCache64GiB，每步保存、保留最近一份普通密集 checkpoint。
 keep1 在新 checkpoint 完整后才删除旧份，保存峰值仍约两份核心（611.5GiB），另计轨迹等数据。
@@ -53,6 +55,7 @@ keep1 在新 checkpoint 完整后才删除旧份，保存峰值仍约两份核�
 | Fir | `rrg-bengioy-ad_gpu` / `gpubase_bynode_b3` | 48 | `450G` | 100GiB |
 | Rorqual | `rrg-bengioy-ad_gpu` / `gpubase_bynode_b3` | 64 | `450G` | 32GiB |
 | Trillium GPU | `rrg-bengioy-ad` / `compute_full_node` | 96 | `0` 整节点 | 100GiB |
+| Nibi | `rrg-bengioy-ad_gpu` / `gpubase_bynode_b3` | 96 | `450G` | 100GiB |
 
 Fir 暂时排除 `fc10609`：正式任务 `5132847` 在该节点发生 CUDA 初始化失败，
 同轮其余五个 rollout 副本均成功 pin 满 64GiB。节点底层原因尚未确认；恢复后移除
@@ -68,7 +71,7 @@ Trillium 包装器只允许 `mem=0`，没有 450G 硬上限；其内存临时盘
 `cluv submit first` 自动同步这个小型管理项目；单独同步可用：
 
 ```bash
-cluv sync tamia fir rorqual trillium-gpu --no-sync-datasets
+cluv sync tamia fir rorqual trillium-gpu nibi --no-sync-datasets
 cluv status jobs --all-jobs
 cluv sh -- squeue --me --name=pear-stage1,cluv-pear-stage1
 ```

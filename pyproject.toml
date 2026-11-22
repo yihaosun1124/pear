@@ -1,7 +1,7 @@
 [project]
 name = "pear-cluv"
 version = "0.1.0"
-description = "Mila control project for the existing DRAC PEAR deployments"
+description = "Mila control project for five DRAC PEAR deployments"
 requires-python = ">=3.9"
 dependencies = []
 
@@ -69,3 +69,17 @@ UV_CACHE_DIR = "/scratch/sunyh/pear_work/cache/cluv-uv"
 PEAR_ROOT = "/scratch/sunyh/pear"
 WORK_DIR = "/scratch/sunyh/pear_work"
 ALLOW_TMPFS_LOCAL = "1"
+
+[tool.cluv.clusters.nibi]
+project_dir = "/scratch/sunyh/pear_cluv_control"
+results_path = "/scratch/sunyh/pear_work/cluv_runs"
+sbatch_args = { nodes = 4, gpus-per-node = "h100:8", account = "rrg-bengioy-ad_gpu", partition = "gpubase_bynode_b3", cpus-per-task = 96, mem = "450G" }
+
+[tool.cluv.clusters.nibi.env]
+UV_CACHE_DIR = "/scratch/sunyh/pear_work/cache/cluv-uv"
+PEAR_ROOT = "/scratch/sunyh/pear"
+WORK_DIR = "/scratch/sunyh/pear_work"
+GPUS_PER_NODE = "8"
+TRAINER_NNODES = "1"
+ROLLOUT_NNODES = "3"
+LIBERO_SERVERS_PER_NODE = "64"

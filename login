@@ -5,7 +5,7 @@ cd -- "$(dirname -- "$0")"
 session=pear-cluv-access
 if [[ ${1:-} == --check ]]; then
   failed=0
-  for cluster in tamia fir rorqual trillium-gpu; do
+  for cluster in tamia fir rorqual trillium-gpu nibi; do
     printf '%s: ' "$cluster"
     ssh -o BatchMode=yes -o ConnectTimeout=15 -O check "$cluster" 2>&1 || failed=1
   done
@@ -15,11 +15,11 @@ if (($# == 0)); then
   exec tmux attach-session -t "$session"
 fi
 if (($# != 1)); then
-  echo 'Usage: ./login [tamia|fir|rorqual|trillium-gpu|--check]' >&2
+  echo 'Usage: ./login [tamia|fir|rorqual|trillium-gpu|nibi|--check]' >&2
   exit 2
 fi
 cluster=$1
-case "$cluster" in tamia|fir|rorqual|trillium-gpu) ;; *) exit 2 ;; esac
+case "$cluster" in tamia|fir|rorqual|trillium-gpu|nibi) ;; *) exit 2 ;; esac
 if ssh -o BatchMode=yes -o ConnectTimeout=15 -O check "$cluster" >/dev/null 2>&1; then
   printf '%s: existing authenticated connection is available on %s\n' "$cluster" "$(hostname)"
   exit 0
