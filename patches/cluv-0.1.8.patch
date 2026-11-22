@@ -1,0 +1,17 @@
+--- cluv/cli/sync.py
++++ cluv/cli/sync.py
+@@ -184 +184 @@
+-    if here := current_cluster():
++    if (here := current_cluster()) and here not in get_disabled_clusters():
+--- cluv/cli/submit.py
++++ cluv/cli/submit.py
+@@ -815,4 +815,5 @@
+-    if "array" in sbatch_args:
+-        sbatch_args["output"] = str(cluster_config.results_path / f"{cluster}_%A/slurm-%A_%a.out")
+-    else:
+-        sbatch_args["output"] = str(cluster_config.results_path / f"{cluster}_%j/slurm-%j.out")
++    if "output" not in sbatch_args:
++        if "array" in sbatch_args:
++            sbatch_args["output"] = str(cluster_config.results_path / f"{cluster}_%A/slurm-%A_%a.out")
++        else:
++            sbatch_args["output"] = str(cluster_config.results_path / f"{cluster}_%j/slurm-%j.out")

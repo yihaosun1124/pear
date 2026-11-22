@@ -4,11 +4,12 @@ set -euo pipefail
 cd -- "$(dirname -- "$0")"
 session=pear-cluv-access
 if [[ ${1:-} == --check ]]; then
+  failed=0
   for cluster in tamia fir rorqual trillium-gpu; do
     printf '%s: ' "$cluster"
-    ssh -o BatchMode=yes -o ConnectTimeout=15 -O check "$cluster" 2>&1 || true
+    ssh -o BatchMode=yes -o ConnectTimeout=15 -O check "$cluster" 2>&1 || failed=1
   done
-  exit 0
+  exit "$failed"
 fi
 if (($# == 0)); then
   exec tmux attach-session -t "$session"
