@@ -79,6 +79,14 @@ else:
  job=str(data['job_id']); expected=str(data.get('expected_current',job))
  if str(m['current_job_id'])!=expected:raise RuntimeError('Current job changed; refuse stale mutation')
  if action=='register':
+  template=data['receipt']['sbatch_args']['output']
+  expanded=template.replace('%j',job).replace('%x',data['receipt']['sbatch_args'].get('job-name','cluv-pear-stage1'))
+  output=pathlib.Path(expanded).resolve();allowed=(pathlib.Path(cfg['work'])/'cluv_runs').resolve()
+  assert '%' not in expanded and allowed in output.parents,'Output must remain under this PEAR Cluv results directory'
+  # Slurm opens stdout before the batch script can create directories. Jobs are
+  # held until all four registration/audit operations have completed.
+  output.parent.mkdir(parents=True,exist_ok=True)
+  data['receipt']['resolved_slurm_output']=str(output)
   receipt=pathlib.Path(cfg['work'])/'logs'/('cluv-race-'+data['race_id']+'-'+job+'-submit.json')
   if receipt.exists():
    assert str(json.loads(receipt.read_text())['job_id'])==job

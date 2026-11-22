@@ -3,6 +3,8 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+import tempfile
+import sys
 from unittest.mock import patch
 
 
@@ -60,6 +62,23 @@ class QueueRaceTests(unittest.TestCase):
 
     def test_embedded_remote_program_has_valid_python_syntax(self):
         compile(race.REMOTE, "remote", "exec")
+
+    def test_registration_creates_slurm_stdout_directory_before_release(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            (work / "runs").mkdir(); (work / "logs").mkdir()
+            monitor = work / "runs/monitor.json"
+            monitor.write_text(json.dumps({"current_job_id": "1"}))
+            payload = {"config": {"monitor": str(monitor), "work": str(work)},
+                       "job_id": "2", "expected_current": "1", "race_id": "test",
+                       "receipt": {"job_id": "2", "sbatch_args": {
+                           "output": str(work / "cluv_runs/fir_%j/slurm-%j.out")}}}
+            with patch.object(sys, "argv", ["-c", "register", json.dumps(payload)]), patch("builtins.print"):
+                exec(compile(race.REMOTE, "remote", "exec"), {})
+            self.assertTrue((work / "cluv_runs/fir_2").is_dir())
+            self.assertEqual(json.loads(monitor.read_text())["current_job_id"], "2")
+            receipt = json.loads((work / "logs/cluv-race-test-2-submit.json").read_text())
+            self.assertEqual(receipt["resolved_slurm_output"], str((work / "cluv_runs/fir_2/slurm-2.out").resolve()))
 
 
 if __name__ == "__main__":
