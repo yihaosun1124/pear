@@ -283,6 +283,28 @@ srun --overlap --nodes="$TOTAL_NODES" --ntasks="$TOTAL_NODES" --ntasks-per-node=
   bash -c 'hostname; nvidia-smi --query-gpu=name,uuid,driver_version --format=csv,noheader; ip -br address' \
   > "$RUN/hardware-$SLURM_JOB_ID.log"
 
+# NVML can list GPUs while CUDA context creation fails on a node. Check actual
+# device execution and host pinning before starting the distributed services.
+srun --overlap --nodes="$TOTAL_NODES" --ntasks="$TOTAL_NODES" --ntasks-per-node=1 --cpus-per-task=1 \
+  bash -c 'source scripts/gpu_process_variables.sh "$WORK_DIR/envs/verl"; python -u -' \
+  > "$RUN/cuda-preflight-$SLURM_JOB_ID.log" 2>&1 <<'PY_CUDA_PREFLIGHT'
+import json
+import os
+import torch
+
+expected = int(os.environ.get("GPUS_PER_NODE", "4"))
+assert torch.cuda.device_count() == expected, (torch.cuda.device_count(), expected)
+for device in range(expected):
+    value = torch.ones(16, device=f"cuda:{device}")
+    assert (value + 1).sum().item() == 32
+    torch.cuda.synchronize(device)
+    del value
+pinned = torch.empty(1024 * 1024, dtype=torch.uint8, pin_memory=True)
+assert pinned.is_pinned()
+print(json.dumps({"node": os.uname().nodename, "cuda_devices": expected,
+                  "cuda_compute": "passed", "host_pin_bytes": pinned.numel()}), flush=True)
+PY_CUDA_PREFLIGHT
+
 if [ "$MODE" = smoke ]; then
   # Run the regressions on their respective nodes before paying for the model load.
   srun --overlap --nodes=1 --ntasks=1 --nodelist="$HEAD" --cpus-per-task="$SLURM_CPUS_PER_TASK" \
