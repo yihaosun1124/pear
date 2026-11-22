@@ -1,6 +1,6 @@
 # PEAR Cluv controller on Mila
 
-管理项目位于 Mila 的 `~/pear-cluv`。Cluv 0.1.8 通过官方推荐的
+管理项目位于 Mila 的 `$SCRATCH/pear-cluv`（`/network/scratch/s/sunyi/pear-cluv`）。Cluv 0.1.8 通过官方推荐的
 `uv tool install cluster-uv` 安装在独立工具环境，训练继续使用四站已经验收的 PEAR 环境。
 
 官方教程：<https://mila-iqia.github.io/cluv/guides/getting-started/>。
@@ -9,7 +9,7 @@
 
 ```bash
 ssh mila
-cd ~/pear-cluv
+cd "$SCRATCH/pear-cluv"
 cluv login tamia fir rorqual trillium-gpu
 ./status
 cluv status jobs --all-jobs
@@ -18,6 +18,8 @@ cluv sh -- squeue --me --name=pear-stage1,cluv-pear-stage1
 
 `cluv login` 在 Mila 上建立并复用 SSH ControlMaster；首次连接可能需要 DRAC 认证。
 Mac 上的已认证 socket 不能直接供 Mila 使用。密钥需要在对应集群获准，Duo 仍按集群要求完成。
+项目已完成初始化，所有源码和管理项目文件均在 scratch。Cluv 的 `init` 有 Home 路径检查；
+本项目已经为各站显式配置 `project_dir`，直接在上述 scratch 目录使用其他命令即可。
 `trillium-gpu` 经 CPU 登录节点进入 `trig-login01`，其 Slurm 集群名是 `grillium`。
 不要把 Trillium CPU 登录节点的队列当作 GPU 队列。
 

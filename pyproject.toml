@@ -19,7 +19,7 @@ WANDB_MODE = "offline"
 
 # Mila is the controller, not a PEAR training target.
 [tool.cluv.clusters.mila]
-project_dir = "$HOME/pear-cluv"
+project_dir = "$SCRATCH/pear-cluv"
 sbatch_args = { nodes = 1, ntasks = 1, cpus-per-task = 1, mem = "1G", time = "00:01:00" }
 
 [tool.cluv.clusters.tamia]
