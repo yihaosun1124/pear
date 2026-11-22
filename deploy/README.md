@@ -395,7 +395,7 @@ TRAIN_PARTITION=compute_full_node
 sbatch --account="$ACCOUNT" --partition="$SMOKE_PARTITION" \
   --gpus-per-node=h100:4 deploy/smoke_test.sbatch
 
-# 正式 Stage 1：默认申请 24 小时；不会自动重复申请。
+# 正式 Stage 1：默认 8 节点、32 卡、2 小时；不会自动重复申请。
 sbatch --account="$ACCOUNT" --partition="$TRAIN_PARTITION" \
   --gpus-per-node=h100:4 deploy/train.sbatch
 
@@ -431,7 +431,7 @@ CPU 数和每节点内存需要按目标集群调整。
 
 | 参数 | smoke test | 正式 Stage 1 |
 | --- | --- | --- |
-| Slurm 时间 | 20 分钟，最短 15 分钟 | 24 小时 |
+| Slurm 时间 | 20 分钟，最短 15 分钟 | 2 小时 |
 | Slurm 内存上限 / 每节点 | 450G | 450G |
 | 训练节点 / rollout 节点 | 1 / 1 | 4 / 12，每节点 4 卡 |
 | 训练 GPU / rollout GPU | 4 / 4 | 16 / 48 |
@@ -454,18 +454,18 @@ CPU 数和每节点内存需要按目标集群调整。
 | 无奖励差异的 group filter | 关闭 | 开启，沿用官方 |
 | checkpoint / 恢复 | 每步、保留 1、禁止恢复 | 每步、保留 1、同一 RUN 自动恢复 |
 
-正式脚本使用每节点 4 卡、4 个 trainer 节点和 12 个 rollout 节点。
+正式脚本使用每节点 4 卡、2 个 trainer 节点和 6 个 rollout 节点，共 8 卡 actor 更新和 24 卡 rollout。
 训练与 rollout 默认值沿用固定版本的官方 Stage 1 / H100 recipe，包括 batch、N、响应预算、MTP、
 group filter 和 logger；checkpoint 按用户要求改为每步保存、只保留最新一份。
 LMCache 主存缓存从 700 GiB 减至 64 GiB；
 Rorqual 还使用用户批准的 NUMA 预留 32 GiB，其他站点默认仍为官方的 100 GiB。
 这是系统缓存容量调整，不改变 GRPO、训练数据或训练目标；可能增加缓存淘汰、搬运和重算。
 每节点 Ray CPU slots 按 Slurm 的 CPU 分配扣除系统余量。
-FSDP8 / SP8 会跨两个 4 卡节点，16 个训练 GPU 的数据并行度为 2。
+FSDP8 / SP8 跨两个 4 卡节点；当前 8 个训练 GPU 构成一个分片组。
 可通过 `TRAINER_NNODES=... ROLLOUT_NNODES=...` 显式调整角色节点数，但必须同时用
 `sbatch --nodes=...` 改变总申请数量；每节点仍是 4 GPU。
 
-**实际通过 GPU 验证的是 smoke 配置；64 卡正式配置尚未执行。**
+**实际通过完整 RL/checkpoint 验证的是 smoke 配置；32 卡正式长序列负载仍需运行验收。**
 静态配置合法性与实际硬件容量是两件事，下面记录缓存调整依据及尚未验证的容量边界。
 
 ### 450G 主存预算与 LMCache 调整
@@ -541,6 +541,14 @@ TransferQueue 快照还包含多模态 `pixel_values`、token、位置编码和 
 节点临时目录也要区分内存盘和磁盘。启动器优先使用磁盘上的 `SLURM_TMPDIR`，否则使用
 `/localscratch/$USER`；没有该目录时才检查并回退到磁盘上的 `/tmp`。Fir 实测 `/tmp` 是 tmpfs，
 `/localscratch` 是本地磁盘。JIT 缓存、Ray 临时文件若放在 tmpfs，会占用作业的内存预算。
+对只有内存盘的站点，可由站点配置显式传 `ALLOW_TMPFS_LOCAL=1`，沿用该站原有临时目录部署；
+默认值为 0，其他站仍要求磁盘。Cluv 的 Trillium GPU profile 使用此选项且申请 `mem=0` 整节点，
+不能把它解释成 450G 内存硬上限。
+
+四站使用相同的 `deploy/train.sbatch` 和 `scripts/{start_ray_node,gpu_process_variables}.sh`。
+站点 account、分区、CPU、内存由 Cluv 管理项目的 `pyproject.toml` 提供，路径、NUMA 与临时盘策略
+由 `clusters.json` 提供。更新启动文件不意味着重装环境或覆盖模型/算法兼容补丁。
+已经提交的 Slurm batch 副本不会随仓库文件更新；当前运行保留自己的启动快照，下一次统一入口提交才使用新脚本。
 同一个 Lustre 文件系统可能承载多个目录配额，`lfs quota -u` 的跨目录用户用量不能代替目标目录配额。
 支持 Lustre project quota 的站点可这样检查实际工作目录：
 

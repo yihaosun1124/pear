@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=pear-stage1
-#SBATCH --nodes=16
+#SBATCH --nodes=8
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=96
-#SBATCH --gpus-per-node=4
+#SBATCH --cpus-per-task=48
+#SBATCH --gpus-per-node=h100:4
 #SBATCH --mem=450G
-#SBATCH --time=1-00:00:00
+#SBATCH --time=02:00:00
 #SBATCH --output=/scratch/%u/pear_work/logs/%x-%j.out
 #SBATCH --error=/scratch/%u/pear_work/logs/%x-%j.err
 
@@ -31,11 +31,12 @@ if [ "$MODE" = smoke ]; then
 else
   # Keep official training hyperparameters; fit the host prefix cache to the deployment budget.
   export STEPS=1000 EPOCHS=100 BATCH=128 N=8 MAX_PROMPT=4096 MAX_RESPONSE=160000
-  export TRAINER_NNODES=4 ROLLOUT_NNODES=12
+  export TRAINER_NNODES=2 ROLLOUT_NNODES=6
   export SESSIONS_PER_REPLICA=64 SPECULATIVE_TOKENS=3 LIBERO_SERVERS_PER_NODE=32 OBJECT_STORE_GB=64
   export LOGGER='["console","file","tensorboard"]'
 fi
 export LMCACHE_GB=64
+export ALLOW_TMPFS_LOCAL=${ALLOW_TMPFS_LOCAL:-0}
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --config-only) CONFIG_ONLY=1 ;;
@@ -44,13 +45,14 @@ while [ "$#" -gt 0 ]; do
       echo 'Names: PEAR_ROOT WORK_DIR RUN MODEL EPISODES BATCH N STEPS EPOCHS MAX_PROMPT MAX_RESPONSE'
       echo '       TRAINER_NNODES ROLLOUT_NNODES SESSIONS_PER_REPLICA SPECULATIVE_TOKENS LIBERO_SERVERS_PER_NODE LOGGER'
       echo '       LMCACHE_GB (host prefix cache per TP4 rollout replica; default 64 GiB)'
+      echo '       ALLOW_TMPFS_LOCAL (0 by default; 1 only for a site without node-local disk)'
       echo 'Use --config-only to compose the config without an allocation; -- passes remaining Hydra overrides.'
       exit 0
       ;;
     PEAR_ROOT=*) ROOT=${1#*=} ;;
     WORK_DIR=* | RUN=* | MODEL=* | EPISODES=* | BATCH=* | N=* | STEPS=* | EPOCHS=* | MAX_PROMPT=* | MAX_RESPONSE=* | \
       TRAINER_NNODES=* | ROLLOUT_NNODES=* | SESSIONS_PER_REPLICA=* | SPECULATIVE_TOKENS=* | \
-      LIBERO_SERVERS_PER_NODE=* | LOGGER=* | LMCACHE_GB=*) export "${1?}" ;;
+      LIBERO_SERVERS_PER_NODE=* | LOGGER=* | LMCACHE_GB=* | ALLOW_TMPFS_LOCAL=*) export "${1?}" ;;
     --)
       shift
       break
@@ -61,13 +63,14 @@ while [ "$#" -gt 0 ]; do
 done
 cd "$ROOT"
 ROOT=$PWD
-export WORK_DIR=${WORK_DIR:-/scratch/$USER/pear_work}
+export WORK_DIR=${WORK_DIR:-${SCRATCH:-/scratch/$USER}/pear_work}
 export GPU=h100
 for name in STEPS EPOCHS BATCH N MAX_PROMPT MAX_RESPONSE SESSIONS_PER_REPLICA LIBERO_SERVERS_PER_NODE \
   TRAINER_NNODES ROLLOUT_NNODES LMCACHE_GB; do
   [[ ${!name} =~ ^[1-9][0-9]*$ ]] || { echo "$name must be a positive integer" >&2; exit 2; }
 done
 [[ $SPECULATIVE_TOKENS =~ ^[0-9]+$ ]] || { echo 'SPECULATIVE_TOKENS must be nonnegative' >&2; exit 2; }
+[[ $ALLOW_TMPFS_LOCAL =~ ^[01]$ ]] || { echo 'ALLOW_TMPFS_LOCAL must be 0 or 1' >&2; exit 2; }
 ((N >= 2 && MAX_PROMPT + MAX_RESPONSE <= 262144)) || { echo 'Invalid GRPO N or context budget' >&2; exit 2; }
 if [ "$MODE" = smoke ] && [ "$STEPS" != 1 ]; then
   echo 'The smoke test requires STEPS=1' >&2
@@ -101,7 +104,7 @@ else
   fi
   # Some DRAC GPU nodes mount /tmp as tmpfs: JIT and Ray files would consume the job's RAM budget.
   LOCAL_PARENT=${SLURM_TMPDIR:-}
-  if [ -n "$LOCAL_PARENT" ] && [ "$(stat -f -c %T "$LOCAL_PARENT")" = tmpfs ]; then
+  if [ "$ALLOW_TMPFS_LOCAL" = 0 ] && [ -n "$LOCAL_PARENT" ] && [ "$(stat -f -c %T "$LOCAL_PARENT")" = tmpfs ]; then
     LOCAL_PARENT=
   fi
   if [ -z "$LOCAL_PARENT" ]; then
@@ -109,7 +112,7 @@ else
       LOCAL_PARENT=/localscratch/$USER
     else
       LOCAL_PARENT=/tmp/$USER
-      [ "$(stat -f -c %T /tmp)" != tmpfs ] || {
+      [ "$ALLOW_TMPFS_LOCAL" = 1 ] || [ "$(stat -f -c %T /tmp)" != tmpfs ] || {
         echo 'Need a disk-backed SLURM_TMPDIR or /localscratch for node-local caches' >&2
         exit 2
       }
@@ -226,7 +229,7 @@ print(json.dumps({"node": os.uname().nodename, "cache_seed": "loaded", "archive_
 PY_NODE_CACHE' pear-node-cache "$ROOT" "$WORK_DIR" "$LOCAL_DIR" \
     > "$RUN/python-cache-stage-$SLURM_JOB_ID.log" 2>&1
 fi
-if [ -f "$WORK_DIR/cache/transformers-source-ready.json" ]; then
+if [ -f "$WORK_DIR/cache/transformers-source-ready.json" ] && [ -f pear/utils/sitecustomize/pear_source_cache.py ]; then
   srun --nodes="$TOTAL_NODES" --ntasks="$TOTAL_NODES" --ntasks-per-node=1 --cpus-per-task=1 \
     /usr/bin/python3 -B -S pear/utils/sitecustomize/pear_source_cache.py stage "$ROOT" "$WORK_DIR" "$LOCAL_DIR" \
     > "$RUN/python-source-stage-$SLURM_JOB_ID.log" 2>&1
