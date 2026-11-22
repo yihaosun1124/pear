@@ -2,13 +2,43 @@
 
 部署入口只有三个文件：
 
-- `deploy/smoke_test.sbatch`：两节点、4+4 H100，验证一个真实 RL step。
-- `deploy/train.sbatch`：64 卡 Stage 1，16 卡训练 + 48 卡 rollout；同时提供 smoke 的公共启动逻辑。
+- `deploy/smoke_test.sbatch`：默认两节点4+4 H100；八卡节点可覆盖为8+8，验证一个真实 RL step。
+- `deploy/train.sbatch`：默认32卡 Stage 1，8卡训练 + 24卡 rollout；同时提供 smoke 的公共启动逻辑。
 - `deploy/README.md`：安装、提交、参数、故障处理与验证记录。
 
 启动器调用官方 `examples/models/qwen3_8_27b_pear/train/run_stage1.sh`，不另写训练循环。
 账户和分区通过 `sbatch` 参数指定；文件名和代码目录不绑定某个集群。
 当前适配的是 Qwen3.8-27B / H100，迁移到其他 GPU 架构需要重新选择官方模型配置及编译目标。
+
+### 八卡节点（Nibi）
+
+Nibi 的 H100 节点每台有8卡。通过 `GPUS_PER_NODE=8` 使用同一启动器：
+smoke 是1个trainer节点＋1个rollout节点（8+8），正式是1＋3个节点（8+24）。
+Slurm 同时覆盖 `--gpus-per-node=h100:8`、实际节点数、账号、分区、CPU和日志路径；
+脚本文件中的 `#SBATCH` 默认值仍供原四卡节点使用。正式任务由Cluv外层申请24小时。
+
+```bash
+# 先确认该站 $SCRATCH、有效账户及分区，不假定另一站的账户也在本节点可用。
+export PEAR_ROOT=$SCRATCH/pear WORK_DIR=$SCRATCH/pear_work
+cd "$PEAR_ROOT"
+
+# 实际提交时补入本站 account / partition / time / memory / CPU 等参数。
+sbatch --nodes=2 --gpus-per-node=h100:8 --cpus-per-task=96 --mem=450G \
+  --time=02:00:00 --time-min=01:50:00 \
+  --output="$WORK_DIR/logs/%x-%j.out" --error="$WORK_DIR/logs/%x-%j.err" \
+  deploy/smoke_test.sbatch GPUS_PER_NODE=8 LIBERO_SERVERS_PER_NODE=8
+
+# 正式启动配置检查，不申请GPU。其余官方训练超参数保持一致。
+bash deploy/train.sbatch --config-only GPUS_PER_NODE=8 \
+  TRAINER_NNODES=1 ROLLOUT_NNODES=3 LIBERO_SERVERS_PER_NODE=64
+```
+
+正式rollout仍为6个TP4副本、每副本64个sessions；8卡节点用每节点64个模拟器资源，
+与原6个四卡rollout节点各32个模拟器保持相同总量。Ray至少需要64+2×8+1=81个CPU slots，
+申请96CPU并预留4CPU后提供92个slots。smoke按每节点8卡使用FSDP/SP8，
+验收应有world8的8份model、8份optim、8份extra_state，另核对HF和TransferQueue状态。
+450G主存、LMCache每TP4副本64GiB、默认NUMA预留100GiB保持；实际容量和拓扑需在本站验证。
+只有真实RL更新和完整checkpoint均通过验收后才把本站加入Cluv，不以配置检查代替smoke。
 
 ## 1. 路径与版本
 

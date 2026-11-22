@@ -36,6 +36,7 @@ else
   export LOGGER='["console","file","tensorboard"]'
 fi
 export LMCACHE_GB=64
+export GPUS_PER_NODE=${GPUS_PER_NODE:-4}
 export ALLOW_TMPFS_LOCAL=${ALLOW_TMPFS_LOCAL:-0}
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -44,6 +45,7 @@ while [ "$#" -gt 0 ]; do
       echo 'Submit from the repo root: sbatch --account=... --partition=... deploy/train.sbatch [NAME=value ...]'
       echo 'Names: PEAR_ROOT WORK_DIR RUN MODEL EPISODES BATCH N STEPS EPOCHS MAX_PROMPT MAX_RESPONSE'
       echo '       TRAINER_NNODES ROLLOUT_NNODES SESSIONS_PER_REPLICA SPECULATIVE_TOKENS LIBERO_SERVERS_PER_NODE LOGGER'
+      echo '       GPUS_PER_NODE (4 by default; 8 on eight-GPU nodes)'
       echo '       LMCACHE_GB (host prefix cache per TP4 rollout replica; default 64 GiB)'
       echo '       ALLOW_TMPFS_LOCAL (0 by default; 1 only for a site without node-local disk)'
       echo 'Use --config-only to compose the config without an allocation; -- passes remaining Hydra overrides.'
@@ -52,7 +54,7 @@ while [ "$#" -gt 0 ]; do
     PEAR_ROOT=*) ROOT=${1#*=} ;;
     WORK_DIR=* | RUN=* | MODEL=* | EPISODES=* | BATCH=* | N=* | STEPS=* | EPOCHS=* | MAX_PROMPT=* | MAX_RESPONSE=* | \
       TRAINER_NNODES=* | ROLLOUT_NNODES=* | SESSIONS_PER_REPLICA=* | SPECULATIVE_TOKENS=* | \
-      LIBERO_SERVERS_PER_NODE=* | LOGGER=* | LMCACHE_GB=* | ALLOW_TMPFS_LOCAL=*) export "${1?}" ;;
+      LIBERO_SERVERS_PER_NODE=* | LOGGER=* | LMCACHE_GB=* | GPUS_PER_NODE=* | ALLOW_TMPFS_LOCAL=*) export "${1?}" ;;
     --)
       shift
       break
@@ -66,11 +68,12 @@ ROOT=$PWD
 export WORK_DIR=${WORK_DIR:-${SCRATCH:-/scratch/$USER}/pear_work}
 export GPU=h100
 for name in STEPS EPOCHS BATCH N MAX_PROMPT MAX_RESPONSE SESSIONS_PER_REPLICA LIBERO_SERVERS_PER_NODE \
-  TRAINER_NNODES ROLLOUT_NNODES LMCACHE_GB; do
+  TRAINER_NNODES ROLLOUT_NNODES LMCACHE_GB GPUS_PER_NODE; do
   [[ ${!name} =~ ^[1-9][0-9]*$ ]] || { echo "$name must be a positive integer" >&2; exit 2; }
 done
 [[ $SPECULATIVE_TOKENS =~ ^[0-9]+$ ]] || { echo 'SPECULATIVE_TOKENS must be nonnegative' >&2; exit 2; }
 [[ $ALLOW_TMPFS_LOCAL =~ ^[01]$ ]] || { echo 'ALLOW_TMPFS_LOCAL must be 0 or 1' >&2; exit 2; }
+[[ $GPUS_PER_NODE == 4 || $GPUS_PER_NODE == 8 ]] || { echo 'GPUS_PER_NODE must be 4 or 8' >&2; exit 2; }
 ((N >= 2 && MAX_PROMPT + MAX_RESPONSE <= 262144)) || { echo 'Invalid GRPO N or context budget' >&2; exit 2; }
 if [ "$MODE" = smoke ] && [ "$STEPS" != 1 ]; then
   echo 'The smoke test requires STEPS=1' >&2
@@ -83,7 +86,7 @@ if [ "$MODE" = smoke ]; then
     exit 2
   fi
 else
-  ((TRAINER_NNODES * 4 % 8 == 0)) || { echo 'Official H100 SP8 needs trainer GPUs divisible by 8' >&2; exit 2; }
+  ((TRAINER_NNODES * GPUS_PER_NODE % 8 == 0)) || { echo 'Official H100 SP8 needs trainer GPUs divisible by 8' >&2; exit 2; }
 fi
 RECIPE=$ROOT/examples/models/qwen3_8_27b_pear/train/run_stage1.sh
 test -f "$RECIPE"
@@ -135,8 +138,8 @@ export NCCL_LAUNCH_ORDER_IMPLICIT=1 NCCL_MNNVL_ENABLE=0 VLLM_ALLREDUCE_USE_FLASH
 export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=1
 
 EXTRA_ARGS=(
-  trainer.n_gpus_per_node=4
-  actor_rollout_ref.rollout.n_gpus_per_node=4
+  trainer.n_gpus_per_node="$GPUS_PER_NODE"
+  actor_rollout_ref.rollout.n_gpus_per_node="$GPUS_PER_NODE"
   trainer.max_actor_ckpt_to_keep=1
 )
 if [ "$MODE" = smoke ]; then
@@ -147,8 +150,8 @@ JSON
   export EPISODES=$RUN/episodes.json
   # Keep the exact token cap of the verified one-step run.
   EXTRA_ARGS+=(
-    actor_rollout_ref.actor.fsdp_config.ulysses_sequence_parallel_size=4
-    actor_rollout_ref.actor.fsdp_config.fsdp_size=4
+    actor_rollout_ref.actor.fsdp_config.ulysses_sequence_parallel_size="$GPUS_PER_NODE"
+    actor_rollout_ref.actor.fsdp_config.fsdp_size="$GPUS_PER_NODE"
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=4096
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=4096
     actor_rollout_ref.rollout.custom.lmcache.enable=false
@@ -242,7 +245,7 @@ export RAY_ADDRESS=$HEAD:6379 PORT=6379
 # also land on a rollout node: 32 simulator slots + 8 GPU slots + 1 driver needs
 # 41 Ray CPUs. Advertising only 40 on a 48-CPU allocation strands one simulator.
 export NUM_CPUS=$((SLURM_CPUS_PER_TASK - 4))
-((NUM_CPUS >= LIBERO_SERVERS_PER_NODE + 2 * 4 + 1)) || {
+((NUM_CPUS >= LIBERO_SERVERS_PER_NODE + 2 * GPUS_PER_NODE + 1)) || {
   echo 'Too few Ray CPU slots for simulators, GPU workers and the driver' >&2
   exit 2
 }
@@ -356,7 +359,8 @@ ray.init(address=os.environ["RAY_ADDRESS"])
 deadline = time.monotonic() + 240
 trainer_nodes = int(os.environ["TRAINER_NNODES"])
 rollout_nodes = int(os.environ["ROLLOUT_NNODES"])
-expected = {"GPU": 4 * (trainer_nodes + rollout_nodes), "trainer": 4 * trainer_nodes, "rollout": 4 * rollout_nodes}
+gpus = int(os.environ["GPUS_PER_NODE"])
+expected = {"GPU": gpus * (trainer_nodes + rollout_nodes), "trainer": gpus * trainer_nodes, "rollout": gpus * rollout_nodes}
 while time.monotonic() < deadline:
     resources = ray.cluster_resources()
     nodes = [node for node in ray.nodes() if node["Alive"]]
@@ -373,6 +377,7 @@ if [ "$MODE" = smoke ]; then
   "$WORK_DIR/envs/verl/bin/python" - "$RUN" <<'PY'
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -387,9 +392,10 @@ for path in run.glob("metrics_*.jsonl"):
             pass
 assert checkpoint.is_dir(), f"Missing step 1 checkpoint: {checkpoint}"
 checkpoint_files = {}
+world_size = int(os.environ["TRAINER_NNODES"]) * int(os.environ["GPUS_PER_NODE"])
 for kind in ("model", "optim", "extra_state"):
-    for rank in range(4):
-        name = f"{kind}_world_size_4_rank_{rank}.pt"
+    for rank in range(world_size):
+        name = f"{kind}_world_size_{world_size}_rank_{rank}.pt"
         matches = list(checkpoint.rglob(name))
         assert len(matches) == 1, f"Missing or ambiguous checkpoint shard: {name}"
         size = matches[0].stat().st_size
