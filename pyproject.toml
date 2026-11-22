@@ -29,7 +29,7 @@ project_dir = "$SCRATCH/pear-cluv"
 [tool.cluv.clusters.tamia]
 project_dir = "/scratch/s/sunyh/pear_cluv_control"
 results_path = "/scratch/s/sunyh/pear_work/cluv_runs"
-sbatch_args = { account = "aip-plbacon", partition = "gpubase_bynode_b1", cpus-per-task = 48, mem = "450G" }
+sbatch_args = { account = "aip-plbacon", partition = "gpubase_bynode_b3", cpus-per-task = 48, mem = "450G" }
 
 [tool.cluv.clusters.tamia.env]
 UV_CACHE_DIR = "/scratch/s/sunyh/pear_work/cache/cluv-uv"
@@ -39,7 +39,7 @@ WORK_DIR = "/scratch/s/sunyh/pear_work"
 [tool.cluv.clusters.fir]
 project_dir = "/scratch/sunyh/pear_cluv_control"
 results_path = "/scratch/sunyh/pear_work/cluv_runs"
-sbatch_args = { account = "rrg-bengioy-ad_gpu", partition = "gpubase_bynode_b1", cpus-per-task = 48, mem = "450G" }
+sbatch_args = { account = "rrg-bengioy-ad_gpu", partition = "gpubase_bynode_b3", cpus-per-task = 48, mem = "450G" }
 
 [tool.cluv.clusters.fir.env]
 UV_CACHE_DIR = "/scratch/sunyh/pear_work/cache/cluv-uv"
@@ -49,7 +49,7 @@ WORK_DIR = "/scratch/sunyh/pear_work"
 [tool.cluv.clusters.rorqual]
 project_dir = "/scratch/sunyh/pear_cluv_control"
 results_path = "/scratch/sunyh/pear_work/cluv_runs"
-sbatch_args = { account = "rrg-bengioy-ad_gpu", partition = "gpubase_bynode_b1", cpus-per-task = 64, mem = "450G" }
+sbatch_args = { account = "rrg-bengioy-ad_gpu", partition = "gpubase_bynode_b3", cpus-per-task = 64, mem = "450G" }
 
 [tool.cluv.clusters.rorqual.env]
 UV_CACHE_DIR = "/scratch/sunyh/pear_work/cache/cluv-uv"

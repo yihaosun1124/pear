@@ -49,11 +49,13 @@ keep1 在新 checkpoint 完整后才删除旧份，保存峰值仍约两份核�
 
 | 集群 | Account / Partition | CPU/节点 | 内存/节点 | NUMA 预留 |
 |---|---|---:|---|---:|
-| Tamia | `aip-plbacon` / `gpubase_bynode_b1` | 48 | `450G` | 100GiB |
-| Fir | `rrg-bengioy-ad_gpu` / `gpubase_bynode_b1` | 48 | `450G` | 100GiB |
-| Rorqual | `rrg-bengioy-ad_gpu` / `gpubase_bynode_b1` | 64 | `450G` | 32GiB |
+| Tamia | `aip-plbacon` / `gpubase_bynode_b3` | 48 | `450G` | 100GiB |
+| Fir | `rrg-bengioy-ad_gpu` / `gpubase_bynode_b3` | 48 | `450G` | 100GiB |
+| Rorqual | `rrg-bengioy-ad_gpu` / `gpubase_bynode_b3` | 64 | `450G` | 32GiB |
 | Trillium GPU | `rrg-bengioy-ad` / `compute_full_node` | 96 | `0` 整节点 | 100GiB |
 
+24 小时申请需使用三站的 `b3` 分区；`b1` 最长 3 小时，`b2` 最长 12 小时。
+改时限时应同时核对实际分区限制，或省略 partition 让站点包装器自动选择。
 Trillium 包装器只允许 `mem=0`，没有 450G 硬上限；其内存临时盘也计入主存使用。
 其他站使用节点本地磁盘。短 smoke 通过不保证正式 160k 长序列负载容量。
 
