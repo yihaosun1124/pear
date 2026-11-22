@@ -34,15 +34,27 @@ for value in command[1:script_index]:
         key, sep, item = value[2:].partition('=')
         flags[key] = item if sep else True
 env = os.environ.copy(); env['TZ'] = 'UTC'
-raw = subprocess.check_output(['scontrol', 'show', 'job', job, '-o'], text=True, env=env)
-fields = dict(item.split('=', 1) for item in raw.split() if '=' in item)
+query = subprocess.run(['scontrol', 'show', 'job', job, '-o'], text=True,
+                       capture_output=True, env=env)
+if query.returncode == 0:
+    fields = dict(item.split('=', 1) for item in query.stdout.split() if '=' in item)
+    submitted, state = fields['SubmitTime'], fields['JobState']
+else:
+    # Slurm removes finished jobs from scontrol; accounting retains their real state.
+    raw = subprocess.check_output(['sacct', '-X', '-n', '-P', '-j', job,
+                                   '--format=JobIDRaw,Submit,State'], text=True, env=env)
+    rows = [line.split('|') for line in raw.splitlines() if line.strip()]
+    matches = [row for row in rows if row[0] == job]
+    if len(matches) != 1:
+        raise RuntimeError('Job missing from both Slurm controller and accounting: ' + job)
+    _, submitted, state = matches[0][:3]
 print(json.dumps({
     'logical_cluster': ALIAS, 'current_job_id': int(job),
-    'submitted_at': fields['SubmitTime'] + '+00:00',
+    'submitted_at': submitted + '+00:00',
     'git_commit': receipt['source_revision'],
     'job_script': settings['root'] + '/deploy/train.sbatch',
     'sbatch_args': flags, 'program_args': command[script_index + 1:],
-    'sbatch_command': shlex.join(command), 'state': fields['JobState'],
+    'sbatch_command': shlex.join(command), 'state': state,
     'current_run': monitor['current_run'],
     'observed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
     'import_origin': 'Read from authoritative PEAR monitor and real Slurm job; no submission'
@@ -68,7 +80,7 @@ def main():
     else:
         for alias, item in settings.items():
             if not asyncio.run(control_socket_is_running(alias)):
-                print(alias + ": disconnected; use cluv login " + alias, file=sys.stderr)
+                print(alias + ": disconnected; use ./login " + alias, file=sys.stderr)
                 continue
             try:
                 records.append(fetch(alias, item))

@@ -10,13 +10,20 @@
 ```bash
 ssh mila
 cd "$SCRATCH/pear-cluv"
-cluv login tamia fir rorqual trillium-gpu
+./login --check
+# 仅在某站连接失效时登录该站，例如：
+./login fir
+# 完成认证后 Ctrl-b d 脱离 tmux，保留会话，再执行：
 ./status
 cluv status jobs --all-jobs
 cluv sh -- squeue --me --name=pear-stage1,cluv-pear-stage1
 ```
 
-`cluv login` 在 Mila 上建立并复用 SSH ControlMaster；首次连接可能需要 DRAC 认证。
+连接保存在 Mila 的 `pear-cluv-access` tmux 会话中，复用标准 SSH ControlMaster，
+Cluv 原生命令会识别这些连接。本站实测短命令退出后未保留连接，因此 `./login` 保持交互通道。
+当前会话位于 **login-2.server.mila.quebec**；先运行 `hostname` 核对，SSH socket 只能在同一 Mila 登录节点复用。
+`./login` 不带参数可返回已有 tmux，会话里的远端 shell 请用 Ctrl-b d 脱离而不是 `exit`。
+首次连接或 master 断开后，仍可能需要 DRAC 认证。
 Mac 上的已认证 socket 不能直接供 Mila 使用。密钥需要在对应集群获准，Duo 仍按集群要求完成。
 项目已完成初始化，所有源码和管理项目文件均在 scratch。Cluv 的 `init` 有 Home 路径检查；
 本项目已经为各站显式配置 `project_dir`，直接在上述 scratch 目录使用其他命令即可。
@@ -25,6 +32,7 @@ Mac 上的已认证 socket 不能直接供 Mila 使用。密钥需要在对应�
 
 `./status` 先读取各站权威 `monitor.json` 的当前作业号，使用 Cluv 自身的 `Job` / `save_job`
 接口登记已有作业，再显示实时状态。登记不提交或取消 Slurm 作业。
+已结束并从 `scontrol` 清除的作业使用 `sacct` 查询；失败状态会如实显示。
 原始提交命令、源码 commit 和来源保存在私有 `.state/imported-jobs.jsonl` 中。
 若连接未认证，Cluv 会显示 disconnected；这不是远端任务失败。
 
