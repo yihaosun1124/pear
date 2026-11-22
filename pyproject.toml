@@ -14,7 +14,7 @@ python-downloads = "never"
 job_script_path = "scripts/job.sh"
 results_path = "$SCRATCH/logs/pear-cluv"
 results_symlink = "logs"
-sbatch_args = { nodes = 8, ntasks-per-node = 1, gpus-per-node = "h100:4", time = "02:00:00", job-name = "pear-stage1", output = "logs/slurm-%j.out" }
+sbatch_args = { nodes = 8, ntasks-per-node = 1, gpus-per-node = "h100:4", time = "24:00:00", job-name = "pear-stage1", output = "logs/slurm-%j.out" }
 
 [tool.cluv.env]
 UV_OFFLINE = "1"

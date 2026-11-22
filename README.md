@@ -42,7 +42,7 @@ Trillium GPU 别名经 CPU 登录节点到 `trig-login01`，实际 Slurm 集群�
 已删除自定义 `submit`、`submit_race.py`、`status/import_jobs.py`、Python 启动适配器及其重复配置。
 原生 Cluv 作业缓存已登记的历史任务仍保留；旧 `.state/race.json` 仅为历史证据，不再控制提交。
 
-四站共同申请 8 节点 × 4 H100、2 小时，2 个 actor 节点（8 卡）＋6 个 rollout 节点（24 卡）。
+四站共同申请 8 节点 × 4 H100、24 小时，2 个 actor 节点（8 卡）＋6 个 rollout 节点（24 卡）。
 保持 BATCH128、N8、PROMPT4096、RESPONSE160000、STEPS1000、EPOCHS100、FSDP8/SP8、TP4、
 MTP3、sessions64/副本及官方 group filter。LMCache64GiB，每步保存、保留最近一份普通密集 checkpoint。
 keep1 在新 checkpoint 完整后才删除旧份，保存峰值仍约两份核心（611.5GiB），另计轨迹等数据。
