@@ -35,7 +35,7 @@ Trillium GPU 别名经 CPU 登录节点到 `trig-login01`，实际 Slurm 集群�
 |---|---|
 | `pyproject.toml` | 共同资源，以及五站节点数、每节点卡数、account、分区、CPU、内存、路径、NUMA 和临时盘差异 |
 | `scripts/job.sh` | 在已有分配内用 bash 调用各站同一份 PEAR `deploy/train.sbatch` |
-| `patches/cluv-0.1.8.patch` | 当前 Cluv 的两处小兼容修正，不实现竞速逻辑 |
+| `patches/cluv-0.1.8.patch` | Cluv 的本机禁用、日志路径及轮询容错修正，保留原生竞速逻辑 |
 
 调用链：`cluv submit first → scripts/job.sh → PEAR/deploy/train.sbatch → 官方 Stage1 → RL 训练`。
 内层 `train.sbatch` 的 `#SBATCH` 行作为注释，不会再次申请资源。
@@ -77,9 +77,9 @@ cluv sh -- squeue --me --name=pear-stage1,cluv-pear-stage1
 ```
 
 各站管理目录为 PEAR 同级的 `pear_cluv_control`。完整 PEAR 源码/环境不由这个管理项目覆盖，
-不跨站复制 venv、JIT、模型或 checkpoint。需要更新 PEAR 启动层时，单独验证并同步四站同一文件。
+不跨站复制 venv、JIT、模型或 checkpoint。需要更新 PEAR 启动层时，单独验证并同步五站同一文件。
 
-Tamia 的 WORK 是 `/scratch/s/sunyh/pear_work`，其余三站是 `/scratch/sunyh/pear_work`。
+Tamia 的 WORK 是 `/scratch/s/sunyh/pear_work`，其余四站是 `/scratch/sunyh/pear_work`。
 Slurm stdout/stderr 合并在 `WORK/cluv_runs/slurm-<jobid>.out`，`logs` 软链接由 Cluv 同步时创建。
 完整训练日志、指标、进度和 checkpoint 位于 `WORK/runs/train-<jobid>`。
 本配置使用平铺 Slurm 日志，Cluv 按运行目录抓取结果的功能不会自动拉回这些平铺文件；需要时单独读取。
@@ -88,9 +88,10 @@ Slurm stdout/stderr 合并在 `WORK/cluv_runs/slurm-<jobid>.out`，`logs` 软链
 
 ## Cluv 0.1.8 一次性兼容修正
 
-本机 Cluv 0.1.8 有两处行为需要修正：`first` 仍加入已禁用的本机，且覆盖显式指定的 stdout 路径。
+Cluv 0.1.8 的补丁修复 `first` 加入已禁用本机、覆盖显式 stdout 路径，以及 Slurm 记账服务临时超时导致竞速退出的问题。
 补丁让 `cluv disable mila` 生效，并使用已有 `logs/` 下的平铺日志，避免 Slurm 启动前目录不存在。
-竞速、取消和同步仍全部由 Cluv 原生实现。Mila 上已应用；重新安装工具后需重新核对补丁。
+状态查询每次最多 45 秒；查询失败或记账记录延迟时保留已知状态，下一轮重查，取消阶段也等待真实终态确认。恢复已有 Job 时跳过同步和提交，避免重复申请。
+竞速、取消和同步仍由 Cluv 原生实现。Mila 上已应用；重新安装工具后需重新核对补丁。
 
 ```bash
 CLUV_PYTHON="$HOME/.local/share/uv/tools/cluster-uv/bin/python"

@@ -15,3 +15,40 @@
 +            sbatch_args["output"] = str(cluster_config.results_path / f"{cluster}_%A/slurm-%A_%a.out")
 +        else:
 +            sbatch_args["output"] = str(cluster_config.results_path / f"{cluster}_%j/slurm-%j.out")
+--- cluv/cli/submit.py
++++ cluv/cli/submit.py
+@@ -332 +332 @@
+-                job_submissions=cluster_job_submissions,
++                job_submissions=[row for row in cluster_job_submissions if not has_job(row)],
+@@ -338,0 +339 @@
++            if any(not has_job(row) for row in cluster_job_submissions)
+@@ -390 +391,6 @@
+-    job_states = await get_job_states_with_sacct(remote, [job.job.job_id for job in jobs])
++    try:
++        async with asyncio.timeout(45):
++            job_states = await get_job_states_with_sacct(remote, [job.job.job_id for job in jobs])
++    except (subprocess.CalledProcessError, TimeoutError, KeyError) as exc:
++        logger.warning("Could not refresh job states on %s; retrying next poll: %s", remote, exc)
++        return
+@@ -410,4 +415,0 @@
+-    cluster_to_job_ids = {
+-        cluster: [job.job_id for job in cluster_jobs if job.job_id is not None]
+-        for cluster, cluster_jobs in cluster_to_job_submissions.items()
+-    }
+@@ -424,7 +426,5 @@
+-                job_states = await gather_dict(
+-                    {
+-                        cluster: get_job_states_with_sacct(
+-                            cluster_to_remote[cluster], cluster_job_ids
+-                        )
+-                        for cluster, cluster_job_ids in cluster_to_job_ids.items()
+-                    }
++                await asyncio.gather(
++                    *(
++                        update_job_states_with_sacct(cluster_to_remote[cluster], cluster_jobs)
++                        for cluster, cluster_jobs in cluster_to_job_submissions.items()
++                    )
+@@ -432,3 +431,0 @@
+-                for cluster, cluster_jobs in cluster_to_job_submissions.items():
+-                    for job, state in zip(cluster_jobs, job_states[cluster]):
+-                        job.state = state.strip().split()[0]  # keep only the first word.
